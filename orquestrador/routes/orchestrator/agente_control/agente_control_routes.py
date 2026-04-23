@@ -1,9 +1,84 @@
-
 import requests
 import logging
 import re
-from flask import jsonify
+from flask import Blueprint, jsonify, request
 from ...services_routs import CONTROL_URL, STRATEGIES_URL, USER_URL, DOMAIN_URL
+
+agente_control_orch_bp = Blueprint('agente_control_orch_bp', __name__)
+
+
+@agente_control_orch_bp.route('/orchestrator/agent/student_session_difficulty_summary', methods=['POST'])
+def orchestrate_student_session_difficulty_summary():
+    """
+    Orquestra a coleta de exercícios no Domain e envia o contexto enriquecido
+    para o endpoint do Control responsável pelo resumo de dificuldade.
+    """
+    data = request.get_json() or {}
+    student_id = data.get('student_id')
+    session_id = data.get('session_id')
+
+    if student_id is None or session_id is None:
+        return jsonify({"error": "student_id e session_id são obrigatórios"}), 400
+
+    try:
+        session_resp = requests.get(f"{CONTROL_URL}/sessions/{session_id}", timeout=10)
+        if session_resp.status_code != 200:
+            return jsonify({
+                "error": "Não foi possível obter metadados da sessão no Control",
+                "details": session_resp.text
+            }), session_resp.status_code
+
+        session_data = session_resp.json() or {}
+        domain_ids = session_data.get('domains', [])
+        exercise_context_by_id = {}
+
+        for domain_id in domain_ids:
+            try:
+                ex_resp = requests.get(f"{DOMAIN_URL}/domains/{int(domain_id)}/exercises", timeout=10)
+                if ex_resp.status_code != 200:
+                    logging.warning(
+                        "Falha ao buscar exercícios no Domain. session_id=%s domain_id=%s status=%s",
+                        session_id, domain_id, ex_resp.status_code
+                    )
+                    continue
+
+                exercises = ex_resp.json()
+                if isinstance(exercises, list):
+                    for exercise in exercises:
+                        if not isinstance(exercise, dict):
+                            continue
+                        ex_id = exercise.get('id')
+                        if ex_id is not None:
+                            exercise_context_by_id[str(ex_id)] = exercise
+            except Exception as ex_err:
+                logging.warning(
+                    "Erro ao buscar exercícios no Domain. session_id=%s domain_id=%s error=%s",
+                    session_id, domain_id, str(ex_err)
+                )
+
+        control_payload = {
+            "student_id": student_id,
+            "session_id": session_id,
+            "exercise_context_by_id": exercise_context_by_id
+        }
+        control_resp = requests.post(
+            f"{CONTROL_URL}/agent/student_session_difficulty_summary",
+            json=control_payload,
+            timeout=60
+        )
+
+        response_json = {}
+        try:
+            response_json = control_resp.json()
+        except Exception:
+            response_json = {"raw": control_resp.text}
+
+        return jsonify(response_json), control_resp.status_code
+
+    except Exception as e:
+        logging.error(f"Erro no orquestrador de student_session_difficulty_summary: {str(e)}")
+        return jsonify({"error": "Falha na orquestração do resumo de dificuldade"}), 500
+
 
 def execute_agent_logic(session_id, session_json):
     """
