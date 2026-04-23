@@ -56,6 +56,30 @@ def orchestrate_student_session_difficulty_summary():
                     session_id, domain_id, str(ex_err)
                 )
 
+        # Fallback: quando a sessão não tem domains mapeados (ou falharam),
+        # tenta buscar todos os domínios para localizar os exercícios por ID.
+        if not exercise_context_by_id:
+            try:
+                all_domains_resp = requests.get(f"{DOMAIN_URL}/domains", timeout=10)
+                if all_domains_resp.status_code == 200:
+                    all_domains = all_domains_resp.json()
+                    if isinstance(all_domains, list):
+                        for domain in all_domains:
+                            exercises = domain.get('exercises', []) if isinstance(domain, dict) else []
+                            if not isinstance(exercises, list):
+                                continue
+                            for exercise in exercises:
+                                if not isinstance(exercise, dict):
+                                    continue
+                                ex_id = exercise.get('id')
+                                if ex_id is not None:
+                                    exercise_context_by_id[str(ex_id)] = exercise
+            except Exception as fallback_err:
+                logging.warning(
+                    "Fallback de exercícios via /domains falhou. session_id=%s erro=%s",
+                    session_id, str(fallback_err)
+                )
+
         control_payload = {
             "student_id": student_id,
             "session_id": session_id,
