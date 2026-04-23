@@ -1,7 +1,6 @@
 import logging
 import os
 from flask import Blueprint, request, jsonify, current_app
-import requests
 # from google import genai
 from config import Config
 from openai import OpenAI
@@ -13,77 +12,6 @@ except ImportError:
     from ...db import create_connection
 
 agente_control_bp = Blueprint('agente_control_bp', __name__)
-
-
-def _fetch_session_exercises_from_domain(session_id):
-    """
-    Busca os exercícios dos domínios vinculados à sessão usando HTTP no serviço de domain.
-    Retorna um dict: {exercise_id(str): exercise_dict}.
-    """
-    conn = None
-    exercise_map = {}
-    try:
-        db_url = current_app.config.get("SQLALCHEMY_DATABASE_URI") or os.getenv("DATABASE_URL")
-        conn = create_connection(db_url)
-        if not conn:
-            return exercise_map
-
-        with conn.cursor() as cur:
-            cur.execute("""
-                SELECT domain_id
-                FROM session_domains
-                WHERE session_id = %s
-            """, (session_id,))
-            domain_rows = cur.fetchall() or []
-
-        domain_ids = []
-        for row in domain_rows:
-            domain_id = row['domain_id'] if isinstance(row, dict) else row[0]
-            if domain_id is not None:
-                domain_ids.append(domain_id)
-
-        if not domain_ids:
-            return exercise_map
-
-        domain_url = (
-            current_app.config.get("DOMAIN_URL")
-            or os.getenv("DOMAIN_URL")
-            or "http://domain:5004"
-        ).rstrip("/")
-
-        for domain_id in domain_ids:
-            try:
-                response = requests.get(
-                    f"{domain_url}/domains/{int(domain_id)}/exercises",
-                    timeout=8
-                )
-                if response.status_code != 200:
-                    logging.warning(
-                        "Falha ao buscar exercícios no domain. session_id=%s domain_id=%s status=%s",
-                        session_id, domain_id, response.status_code
-                    )
-                    continue
-
-                exercises = response.json()
-                if isinstance(exercises, list):
-                    for exercise in exercises:
-                        if not isinstance(exercise, dict):
-                            continue
-                        ex_id = exercise.get('id')
-                        if ex_id is not None:
-                            exercise_map[str(ex_id)] = exercise
-            except Exception as domain_err:
-                logging.warning(
-                    "Erro HTTP ao buscar exercícios no domain. session_id=%s domain_id=%s erro=%s",
-                    session_id, domain_id, str(domain_err)
-                )
-    except Exception as e:
-        logging.warning("Erro ao mapear domínios/exercícios da sessão %s: %s", session_id, str(e))
-    finally:
-        if conn:
-            conn.close()
-
-    return exercise_map
 
 # ... (Mantenha suas outras rotas existentes: create_session, etc.) ...
 
@@ -403,7 +331,9 @@ def student_session_difficulty_summary():
         if not isinstance(raw_answers, list) or len(raw_answers) == 0:
             return jsonify({"error": "Estrutura de respostas inválida ou vazia"}), 422
 
-        exercise_map = _fetch_session_exercises_from_domain(session_id)
+        exercise_map = data.get('exercise_context_by_id', {})
+        if not isinstance(exercise_map, dict):
+            exercise_map = {}
 
         acertos = []
         erros = []
