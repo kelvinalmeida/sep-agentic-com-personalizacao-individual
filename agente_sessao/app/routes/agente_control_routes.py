@@ -465,7 +465,7 @@ def student_session_difficulty_summary():
         Não use markdown, não use JSON, não use título.
         """
 
-        return jsonify({ "pronpt": prompt })  # Para debug do prompt
+        # return jsonify({ "pronpt": prompt })  # Para debug do prompt
 
         client = OpenAI(
             api_key=Config.GROQ_API_KEY,
