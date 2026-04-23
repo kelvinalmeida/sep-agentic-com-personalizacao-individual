@@ -383,6 +383,11 @@ def student_session_difficulty_summary():
         exercise_map = data.get('exercise_context_by_id', {})
         if not isinstance(exercise_map, dict):
             exercise_map = {}
+        exercise_list = list(exercise_map.values())
+        try:
+            exercise_list.sort(key=lambda ex: int(ex.get("id", 0)))
+        except Exception:
+            pass
 
         acertos = []
         erros = []
@@ -394,6 +399,11 @@ def student_session_difficulty_summary():
 
             exercise_id = ans.get('exercise_id')
             exercise_data = exercise_map.get(str(exercise_id), {})
+            if not exercise_data and exercise_list:
+                # fallback para casos em que o exercise_id salvo não corresponde
+                # ao id real do domínio (ex: respostas com ids locais 101/102).
+                if 0 <= (idx - 1) < len(exercise_list):
+                    exercise_data = exercise_list[idx - 1]
             options = _normalize_options(exercise_data.get('options', []))
             options_txt = " | ".join([f"{i}: {opt}" for i, opt in enumerate(options)])
 
