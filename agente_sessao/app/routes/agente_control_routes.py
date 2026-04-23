@@ -284,3 +284,140 @@ def get_student_grades_history(student_id):
     finally:
         if conn:
             conn.close()
+
+
+@agente_control_bp.route('/agent/student_session_difficulty_summary', methods=['POST'])
+def student_session_difficulty_summary():
+    """
+    Recebe student_id e session_id, analisa respostas do exercício
+    (acertos/erros) e devolve um resumo de até 10 linhas sobre dificuldades.
+    """
+    data = request.get_json() or {}
+    student_id = data.get('student_id')
+    session_id = data.get('session_id')
+
+    if student_id is None or session_id is None:
+        return jsonify({"error": "student_id e session_id são obrigatórios"}), 400
+
+    conn = None
+    try:
+        db_url = current_app.config.get("SQLALCHEMY_DATABASE_URI") or os.getenv("DATABASE_URL")
+        conn = create_connection(db_url)
+
+        if not conn:
+            return jsonify({"error": "Falha na conexão com o banco de dados"}), 500
+
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT student_name, answers, score
+                FROM verified_answers
+                WHERE student_id = %s AND session_id = %s
+                ORDER BY id DESC
+                LIMIT 1
+            """, (str(student_id), session_id))
+            verified = cur.fetchone()
+
+        if not verified:
+            return jsonify({"error": "Respostas do aluno não encontradas para esta sessão"}), 404
+
+        raw_answers = verified.get('answers', [])
+        if isinstance(raw_answers, str):
+            try:
+                import json
+                raw_answers = json.loads(raw_answers)
+            except Exception:
+                raw_answers = []
+
+        if not isinstance(raw_answers, list) or len(raw_answers) == 0:
+            return jsonify({"error": "Estrutura de respostas inválida ou vazia"}), 422
+
+        acertos = []
+        erros = []
+        linhas_detalhes = []
+
+        for idx, ans in enumerate(raw_answers, start=1):
+            if not isinstance(ans, dict):
+                continue
+
+            question_text = (
+                ans.get('question')
+                or ans.get('question_text')
+                or ans.get('enunciado')
+                or f"Questão {ans.get('exercise_id', idx)}"
+            )
+            resposta_aluno = ans.get('answer', ans.get('user_answer', 'Não informado'))
+            resposta_correta = ans.get('correct_answer', ans.get('expected_answer', 'Não informada'))
+            correto = bool(ans.get('correct', False))
+
+            status = "ACERTOU" if correto else "ERROU"
+            linhas_detalhes.append(
+                f"- {question_text} | resposta: {resposta_aluno} | correta: {resposta_correta} | {status}"
+            )
+
+            if correto:
+                acertos.append(question_text)
+            else:
+                erros.append(question_text)
+
+        prompt = f"""
+        Você é um tutor pedagógico especializado em diagnóstico de aprendizagem.
+        Analise as respostas de um aluno na sessão e identifique os assuntos em que ele tem dificuldade.
+
+        DADOS:
+        - Aluno: {verified.get('student_name', 'Aluno')}
+        - Student ID: {student_id}
+        - Sessão: {session_id}
+        - Score geral: {verified.get('score', 0)}
+        - Total de questões: {len(linhas_detalhes)}
+        - Acertos: {len(acertos)}
+        - Erros: {len(erros)}
+
+        QUESTÕES E RESPOSTAS:
+        {chr(10).join(linhas_detalhes)}
+
+        QUESTÕES ERRADAS (foco de dificuldade):
+        {erros if erros else ['Nenhuma questão errada']}
+
+        OBJETIVO:
+        Gere um resumo em português com EXATAMENTE 10 linhas curtas explicando:
+        1) Quais assuntos aparentam maior dificuldade.
+        2) Que padrão de erro aparece nas respostas.
+        3) O que priorizar na revisão do aluno.
+        4) Sugestões de estudo objetivas.
+
+        Não use markdown, não use JSON, não use título.
+        """
+
+        client = OpenAI(
+            api_key=Config.GROQ_API_KEY,
+            base_url="https://api.groq.com/openai/v1"
+        )
+
+        response = client.chat.completions.create(
+            model="llama-3.3-70b-versatile",
+            messages=[
+                {"role": "system", "content": "Você gera diagnósticos pedagógicos claros e objetivos."},
+                {"role": "user", "content": prompt}
+            ],
+            temperature=0.2
+        )
+
+        summary = (response.choices[0].message.content or "").strip()
+
+        return jsonify({
+            "student_id": str(student_id),
+            "session_id": int(session_id),
+            "score": verified.get('score', 0),
+            "total_questions": len(linhas_detalhes),
+            "correct_count": len(acertos),
+            "wrong_count": len(erros),
+            "questions_summary": linhas_detalhes,
+            "difficulty_summary": summary
+        }), 200
+
+    except Exception as e:
+        logging.error(f"Erro em student_session_difficulty_summary: {str(e)}")
+        return jsonify({"error": str(e)}), 500
+    finally:
+        if conn:
+            conn.close()
