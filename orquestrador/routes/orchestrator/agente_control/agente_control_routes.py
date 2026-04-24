@@ -179,6 +179,11 @@ def orchestrate_student_learning_support():
             json=strategy_payload,
             timeout=60
         )
+        study_text_resp = requests.post(
+            f"{STRATEGIES_URL}/agent/generate_personalized_study_text",
+            json=strategy_payload,
+            timeout=60
+        )
 
         strategy_json = {}
         try:
@@ -186,13 +191,20 @@ def orchestrate_student_learning_support():
         except Exception:
             strategy_json = {"raw": strategy_resp.text}
 
+        study_text_json = {}
+        try:
+            study_text_json = study_text_resp.json()
+        except Exception:
+            study_text_json = {"raw": study_text_resp.text}
+
         return jsonify({
             "student_id": student_id,
             "session_id": session_id,
             "difficulty_data": difficulty_data,
             "profile_data": user_data,
-            "video_recommendation": strategy_json
-        }), strategy_resp.status_code
+            "video_recommendation": strategy_json,
+            "personalized_study_text": study_text_json
+        }), 200
 
     except Exception as e:
         logging.error(f"Erro no orquestrador de learning support: {str(e)}")
