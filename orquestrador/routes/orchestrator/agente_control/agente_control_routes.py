@@ -73,47 +73,6 @@ def _build_exercise_context_for_session(session_id):
     return exercise_context_by_id, None
 
 
-@agente_control_orch_bp.route('/orchestrator/agent/student_session_difficulty_summary', methods=['POST'])
-def orchestrate_student_session_difficulty_summary():
-    """
-    Orquestra a coleta de exercícios no Domain e envia o contexto enriquecido
-    para o endpoint do Control responsável pelo resumo de dificuldade.
-    """
-    data = request.get_json() or {}
-    student_id = data.get('student_id')
-    session_id = data.get('session_id')
-
-    if student_id is None or session_id is None:
-        return jsonify({"error": "student_id e session_id são obrigatórios"}), 400
-
-    try:
-        exercise_context_by_id, err_resp = _build_exercise_context_for_session(session_id)
-        if err_resp:
-            return err_resp
-
-        control_payload = {
-            "student_id": student_id,
-            "session_id": session_id,
-            "exercise_context_by_id": exercise_context_by_id
-        }
-        control_resp = requests.post(
-            f"{CONTROL_URL}/agent/student_session_difficulty_summary",
-            json=control_payload,
-            timeout=60
-        )
-
-        response_json = {}
-        try:
-            response_json = control_resp.json()
-        except Exception:
-            response_json = {"raw": control_resp.text}
-
-        return jsonify(response_json), control_resp.status_code
-
-    except Exception as e:
-        logging.error(f"Erro no orquestrador de student_session_difficulty_summary: {str(e)}")
-        return jsonify({"error": "Falha na orquestração do resumo de dificuldade"}), 500
-
 
 @agente_control_orch_bp.route('/orchestrator/agent/tudent_session_difficulty_summary', methods=['POST'])
 @agente_control_orch_bp.route('/orchestrator/agent/student_session_learning_support', methods=['POST'])
