@@ -32,7 +32,7 @@ def ensure_tutor_chat_table(conn):
 @agente_user_bp.route('/students/summarize_preferences', methods=['POST'])
 def summarize_preferences():
     """
-    Agente User: Recebe IDs, busca via SQL Direto (psycopg2) e resume com Gemini.
+    Agente User: Recebe IDs, busca via SQL Direto (psycopg2) e resume com Grooq.
     """
     data = request.get_json()
     student_ids = data.get('student_ids', [])
@@ -118,7 +118,6 @@ def summarize_preferences():
             summary_dict = {
                 "resumo": content_text,
                 "perfil_turma": {},
-                "uso_email": "Indeterminado"
             }
 
         return jsonify({
