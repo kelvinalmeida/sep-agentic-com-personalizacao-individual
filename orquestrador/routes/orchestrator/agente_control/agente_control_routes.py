@@ -163,3 +163,80 @@ def execute_agent_logic(session_id, session_json):
 
     # Se falhar ou não decidir, retorna None para indicar fallback
     return None
+
+
+def _safe_parse_response_body(response):
+    """
+    Faz parse seguro do corpo da resposta.
+    Se não for JSON válido, retorna texto bruto.
+    """
+    try:
+        return response.json()
+    except ValueError:
+        raw_text = response.text if response.text is not None else ""
+        return {"raw_response": raw_text}
+
+
+def _call_strategies_endpoint(path, payload, timeout=30):
+    """
+    Helper para reduzir duplicação de requests.post + parse seguro.
+    """
+    response = requests.post(f"{STRATEGIES_URL}{path}", json=payload, timeout=timeout)
+    parsed_body = _safe_parse_response_body(response)
+    return response, parsed_body
+
+
+def orchestrate_student_learning_support(difficulty_summary, questions_summary, profile_summary):
+    """
+    Orquestra recomendações de apoio ao estudo para o aluno:
+    1) Recomendação de vídeo no YouTube.
+    2) Geração de texto de estudo personalizado.
+    """
+    strategy_payload = {
+        "difficulty_summary": difficulty_summary,
+        "questions_summary": questions_summary,
+        "profile_summary": profile_summary
+    }
+
+    # 1) Recomendação de vídeo (mantém chamada existente)
+    try:
+        video_response, video_data = _call_strategies_endpoint(
+            "/agent/recommend_youtube_video",
+            strategy_payload
+        )
+    except Exception as e:
+        logging.error(f"Erro ao chamar recommend_youtube_video: {e}")
+        return jsonify({
+            "error": "video_recommendation",
+            "details": "Falha de comunicação ao recomendar vídeo."
+        }), 503
+
+    if video_response.status_code != 200:
+        return jsonify({
+            "error": "video_recommendation",
+            "details": video_data,
+        }), video_response.status_code
+
+    # 2) Texto personalizado
+    try:
+        text_response, text_data = _call_strategies_endpoint(
+            "/agent/generate_personalized_study_text",
+            strategy_payload
+        )
+    except Exception as e:
+        logging.error(f"Erro ao chamar generate_personalized_study_text: {e}")
+        return jsonify({
+            "error": "personalized_study_text",
+            "details": "Falha de comunicação ao gerar texto personalizado."
+        }), 503
+
+    if text_response.status_code != 200:
+        return jsonify({
+            "error": "personalized_study_text",
+            "details": text_data,
+        }), text_response.status_code
+
+    return jsonify({
+        "video_recommendation": video_data,
+        "personalized_study_text": text_data
+    }), 200
