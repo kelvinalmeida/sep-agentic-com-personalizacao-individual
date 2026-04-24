@@ -1,7 +1,9 @@
 import logging
+import json
+import re
+import requests
 from flask import Blueprint, request, jsonify
 from config import Config
-from openai import OpenAI
 
 agente_video_bp = Blueprint('agente_video_bp', __name__)
 
@@ -21,6 +23,9 @@ def recommend_youtube_video():
         return jsonify({"error": "difficulty_summary ou questions_summary é obrigatório"}), 400
 
     try:
+        if not Config.GEMINI_API_KEY:
+            return jsonify({"error": "GEMINI_API_KEY não configurada"}), 500
+
         prompt = f"""
         Você é um tutor pedagógico especializado em recomendar vídeo-aulas.
         Analise o diagnóstico abaixo e indique UM vídeo do YouTube para ajudar o aluno.
@@ -41,24 +46,41 @@ def recommend_youtube_video():
         }}
         """
 
-        client = OpenAI(
-            api_key=Config.GROQ_API_KEY,
-            base_url="https://api.groq.com/openai/v1"
+        gemini_url = (
+            "https://generativelanguage.googleapis.com/v1beta/models/"
+            "gemini-2.5-flash:generateContent"
         )
-
-        response = client.chat.completions.create(
-            model="llama-3.3-70b-versatile",
-            messages=[
-                {"role": "system", "content": "Responda apenas JSON válido."},
-                {"role": "user", "content": prompt}
-            ],
-            response_format={"type": "json_object"},
-            temperature=0.2
+        payload = {
+            "contents": [{"parts": [{"text": prompt}]}],
+            "generationConfig": {
+                "temperature": 0.2,
+                "responseMimeType": "application/json"
+            }
+        }
+        response = requests.post(
+            f"{gemini_url}?key={Config.GEMINI_API_KEY}",
+            json=payload,
+            timeout=60
         )
+        if response.status_code != 200:
+            return jsonify({
+                "error": "Falha ao consultar Gemini",
+                "details": response.text
+            }), response.status_code
 
-        import json
-        content = response.choices[0].message.content or "{}"
-        parsed = json.loads(content)
+        resp_json = response.json()
+        candidates = resp_json.get("candidates", [])
+        text_content = ""
+        if candidates:
+            parts = candidates[0].get("content", {}).get("parts", [])
+            if parts and isinstance(parts[0], dict):
+                text_content = parts[0].get("text", "")
+
+        clean_content = text_content.strip()
+        if clean_content.startswith("```"):
+            clean_content = re.sub(r"^```(?:json)?\s*|\s*```$", "", clean_content, flags=re.DOTALL).strip()
+
+        parsed = json.loads(clean_content or "{}")
 
         return jsonify({
             "youtube_url": parsed.get("youtube_url", ""),
