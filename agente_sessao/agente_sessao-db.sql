@@ -8,6 +8,7 @@ DROP TABLE IF EXISTS session_strategies CASCADE;
 DROP TABLE IF EXISTS session_teachers CASCADE;
 DROP TABLE IF EXISTS session_students CASCADE;
 DROP TABLE IF EXISTS session_domains CASCADE;
+DROP TABLE IF EXISTS session_student_state CASCADE;
 DROP TABLE IF EXISTS session CASCADE;
 
 -- Tabela Session
@@ -52,6 +53,18 @@ CREATE TABLE session_domains (
     domain_id VARCHAR(50) NOT NULL,
     PRIMARY KEY (session_id, domain_id),
     CONSTRAINT fk_session_domains
+        FOREIGN KEY (session_id) REFERENCES session (id) ON DELETE CASCADE
+);
+
+CREATE TABLE session_student_state (
+    session_id INTEGER NOT NULL,
+    student_id VARCHAR(50) NOT NULL,
+    current_tactic_index INTEGER NOT NULL DEFAULT 0,
+    executed_indices TEXT NOT NULL DEFAULT '[]',
+    last_rating INTEGER,
+    updated_at TIMESTAMP NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (session_id, student_id),
+    CONSTRAINT fk_session_student_state_session
         FOREIGN KEY (session_id) REFERENCES session (id) ON DELETE CASCADE
 );
 
@@ -106,6 +119,11 @@ INSERT INTO session_students (session_id, student_id) VALUES
 (1, '1'),
 (2, '1'),
 (3, '1');
+
+INSERT INTO session_student_state (session_id, student_id, current_tactic_index, executed_indices, last_rating, updated_at) VALUES
+(1, '1', 0, '[]', NULL, NOW()),
+(2, '1', 1, '[0]', 4, NOW()),
+(3, '1', 5, '[0,1,2,3,4]', 5, NOW());
 
 -- Vinculando Domínios
 INSERT INTO session_domains (session_id, domain_id) VALUES
