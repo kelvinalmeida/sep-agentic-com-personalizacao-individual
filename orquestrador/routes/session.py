@@ -407,8 +407,16 @@ def get_current_tactic(session_id):
     if session_json['status'] != 'in-progress':
         return jsonify({'message': 'Session not started or finished', 'session_status': session_json['status']}), 200
 
-    # Get Current Tactic Index from Session
+    student_id = request.args.get("student_id")
+    student_state = None
+
+    # Get Current Tactic Index from Session/Student
     current_tactic_index = session_json.get("current_tactic_index", 0)
+    if student_id:
+        state_res = requests.get(f"{CONTROL_URL}/sessions/{session_id}/students/{student_id}/current_tactic")
+        if state_res.status_code == 200:
+            student_state = state_res.json()
+            current_tactic_index = student_state.get("current_tactic_index", current_tactic_index)
 
     # Fetch all tactics
     tactics = []
@@ -496,7 +504,9 @@ def get_current_tactic(session_id):
         'strategy_tactics': tactics,
         'session_status': session_json['status'],
         'current_tactic_index': current_tactic_index,
-        'strategy_id': current_strategy_id
+        'strategy_id': current_strategy_id,
+        'student_id': student_id,
+        'student_state': student_state
     })
 
 

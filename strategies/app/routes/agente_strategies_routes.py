@@ -121,6 +121,7 @@ def decide_next_tactic():
     data = request.get_json()
 
     # --- 1. Extração do Contexto ---
+    student_id = data.get('student_id')
     strategy_id = data.get('strategy_id') # estrategia da sessão para consultar táticas disponíveis
     executed_ids = data.get('executed_tactics', []) # Ex: [1, 2], IDs das tatocas já feitos na sessão
     
@@ -230,6 +231,7 @@ def decide_next_tactic():
         Descrição: {domain_description}
 
         === PERFIL DO ALUNO ===
+        Student ID: {student_id if student_id is not None else "não informado"}
         {student_profile_summary}
 
         === PERFIL DA TURMA ===

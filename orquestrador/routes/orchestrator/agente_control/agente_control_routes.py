@@ -1,6 +1,5 @@
 import requests
 import logging
-import re
 from collections import Counter
 from flask import Blueprint, jsonify, request
 from ...services_routs import CONTROL_URL, STRATEGIES_URL, USER_URL, DOMAIN_URL
@@ -216,6 +215,7 @@ def execute_agent_logic(session_id, session_json):
         tactic_idx_by_id = {int(t.get("id")): idx for idx, t in enumerate(tactics) if t.get("id") is not None}
         individual_decisions = []
         recommended_indices = []
+        decision_cache = {}
 
         for student_id in student_ids:
             student_state_res = requests.get(
@@ -275,35 +275,48 @@ def execute_agent_logic(session_id, session_json):
                     current_session_student_performance
                 )
 
-            ai_payload = {
-                "strategy_id": strategy_id,
-                "executed_tactics": executed_tactics,
-                "student_profile_summary": student_profile_summary,
-                "performance_summary": session_performance_summary,
-                "class_profile_summary": class_profile_summary,
-                "student_history_summary": student_history_summary,
-                "current_session_student_performance": current_session_student_performance,
-                "last_session_rating": student_state.get("last_rating"),
-                "personalization_rules": [
-                    "Considere perfil individual, perfil da turma, histórico do aluno e desempenho atual da sessão.",
-                    "Evite repetir táticas já executadas, exceto quando o reforço for necessário.",
-                    "Se houver tática de mudança de estratégia, só use quando houver justificativa forte."
-                ]
-            }
-
-            ai_res = requests.post(
-                f"{STRATEGIES_URL}/agent/decide_next_tactic",
-                json=ai_payload,
-                timeout=45
+            cache_key = (
+                str(student_profile_summary).strip(),
+                str(student_history_summary).strip(),
+                str(current_session_student_performance).strip(),
+                str(student_state.get("last_rating"))
             )
-            if ai_res.status_code != 200:
-                logging.warning(
-                    "Falha ao obter decisão da IA no Strategies. session_id=%s student_id=%s status=%s",
-                    session_id, student_id, ai_res.status_code
-                )
-                continue
 
-            decision = (ai_res.json() or {}).get("decision", {})
+            cached_decision = decision_cache.get(cache_key)
+            if cached_decision is None:
+                ai_payload = {
+                    "student_id": str(student_id),
+                    "strategy_id": strategy_id,
+                    "executed_tactics": executed_tactics,
+                    "student_profile_summary": student_profile_summary,
+                    "performance_summary": session_performance_summary,
+                    "class_profile_summary": class_profile_summary,
+                    "student_history_summary": student_history_summary,
+                    "current_session_student_performance": current_session_student_performance,
+                    "last_session_rating": student_state.get("last_rating"),
+                    "personalization_rules": [
+                        "Considere perfil individual, perfil da turma, histórico do aluno e desempenho atual da sessão.",
+                        "Evite repetir táticas já executadas, exceto quando o reforço for necessário.",
+                        "Se houver tática de mudança de estratégia, só use quando houver justificativa forte."
+                    ]
+                }
+
+                ai_res = requests.post(
+                    f"{STRATEGIES_URL}/agent/decide_next_tactic",
+                    json=ai_payload,
+                    timeout=45
+                )
+                if ai_res.status_code != 200:
+                    logging.warning(
+                        "Falha ao obter decisão da IA no Strategies. session_id=%s student_id=%s status=%s",
+                        session_id, student_id, ai_res.status_code
+                    )
+                    continue
+
+                cached_decision = (ai_res.json() or {}).get("decision", {})
+                decision_cache[cache_key] = cached_decision
+
+            decision = cached_decision
             chosen_tactic_id = decision.get("chosen_tactic_id")
             idx = None
             if chosen_tactic_id is not None:
@@ -332,33 +345,14 @@ def execute_agent_logic(session_id, session_json):
         if not individual_decisions:
             return None
 
-        consensus_index = Counter(recommended_indices).most_common(1)[0][0]
-        requests.post(
-            f"{CONTROL_URL}/sessions/tactic/set/{session_id}",
-            json={"tactic_index": consensus_index},
-            timeout=15
-        )
-
-        current_tactic = tactics[consensus_index]
-        tactic_name = current_tactic.get('name', '').strip().lower()
-        valid_names = ["mudanca de estrategia", "mudança de estratégia", "mudança de estrategia", "mudanca de estratégia"]
-
-        if tactic_name in valid_names:
-            description = str(current_tactic.get('description', ''))
-            match = re.search(r'\d+', description)
-            if match:
-                target_strategy_id = int(match.group())
-                switch_res = requests.post(
-                    f"{CONTROL_URL}/sessions/{session_id}/temp_switch_strategy",
-                    json={'strategy_id': target_strategy_id}
-                )
-                if switch_res.status_code != 200:
-                    logging.error(f"❌ Falha ao trocar estratégia (consenso): {switch_res.text}")
+        distribution = dict(Counter(recommended_indices))
 
         return jsonify({
             "success": True,
             "mode": "individual_per_student",
-            "consensus_tactic_index": consensus_index,
+            "consensus_tactic_index": None,
+            "tactic_distribution": distribution,
+            "ai_calls_count": len(decision_cache),
             "student_decisions": individual_decisions
         }), 200
     except Exception as e:
