@@ -1,5 +1,6 @@
 import logging
 import os
+import json
 from flask import Blueprint, request, jsonify, current_app
 # from google import genai
 from config import Config
@@ -12,6 +13,55 @@ except ImportError:
     from ...db import create_connection
 
 agente_control_bp = Blueprint('agente_control_bp', __name__)
+
+
+def _normalize_options(options_raw):
+    """
+    Normaliza opções para lista de textos.
+    Aceita list, dict ou string JSON.
+    """
+    options = options_raw
+    if isinstance(options, str):
+        try:
+            options = json.loads(options)
+        except Exception:
+            return []
+
+    if isinstance(options, dict):
+        # Ordena por chave quando possível para preservar sequência
+        try:
+            return [str(v) for _, v in sorted(options.items(), key=lambda kv: int(kv[0]))]
+        except Exception:
+            return [str(v) for v in options.values()]
+
+    if isinstance(options, list):
+        return [str(v) for v in options]
+
+    return []
+
+
+def _resolve_option_text(option_value, options):
+    """
+    Converte resposta codificada (ex: 0/1/2) para texto da alternativa.
+    Suporta índice 0-based e 1-based.
+    """
+    if not options:
+        return option_value
+
+    try:
+        idx = int(option_value)
+    except Exception:
+        return option_value
+
+    # 0-based
+    if 0 <= idx < len(options):
+        return options[idx]
+
+    # 1-based
+    if 1 <= idx <= len(options):
+        return options[idx - 1]
+
+    return option_value
 
 # ... (Mantenha suas outras rotas existentes: create_session, etc.) ...
 
@@ -54,16 +104,13 @@ def agent_session_summary(session_id):
             """, (session_id,))
             total_strategies = cur.fetchone()['total']
 
-            # C. Notas dos Exercícios (Lista de inteiros)
-            # Pegamos apenas os scores para análise estatística
+            # C. Dados das respostas verificadas da sessão
             cur.execute("""
-                SELECT score 
+                SELECT answers, score
                 FROM verified_answers 
                 WHERE session_id = %s
             """, (session_id,))
-            exercise_rows = cur.fetchall()
-            # Ex: [10, 5, 8, 9]
-            exercise_scores = [row['score'] for row in exercise_rows]
+            verified_rows = cur.fetchall()
 
             # D. Notas Extras (Lista de floats)
             cur.execute("""
@@ -73,12 +120,51 @@ def agent_session_summary(session_id):
             """, (session_id,))
             extra_rows = cur.fetchall()
             # Ex: [9.5, 8.0]
-            extra_scores = [row['extra_notes'] for row in extra_rows]
+            extra_scores = [
+                float(row['extra_notes'])
+                for row in extra_rows
+                if row.get('extra_notes') is not None
+            ]
 
         # 2. Estatísticas Gerais (Cálculos Python)
-        total_exercises = len(exercise_scores)
-        avg_exercises = sum(exercise_scores) / total_exercises if total_exercises > 0 else 0
-        
+        submission_scores = []
+        total_answered_questions = 0
+        total_correct_answers = 0
+
+        for row in verified_rows:
+            raw_score = row.get('score') if isinstance(row, dict) else None
+            if raw_score is not None:
+                try:
+                    submission_scores.append(float(raw_score))
+                except (TypeError, ValueError):
+                    pass
+
+            answers = row.get('answers') if isinstance(row, dict) else []
+            if isinstance(answers, str):
+                try:
+                    answers = json.loads(answers)
+                except Exception:
+                    answers = []
+
+            if not isinstance(answers, list):
+                continue
+
+            for ans in answers:
+                if not isinstance(ans, dict):
+                    continue
+                total_answered_questions += 1
+                if bool(ans.get('correct')) is True:
+                    total_correct_answers += 1
+
+        avg_submission_score = (
+            sum(submission_scores) / len(submission_scores)
+            if submission_scores else 0
+        )
+        correctness_rate = (
+            (total_correct_answers / total_answered_questions) * 100
+            if total_answered_questions > 0 else 0
+        )
+
         total_extras = len(extra_scores)
         avg_extras = sum(extra_scores) / total_extras if total_extras > 0 else 0
 
@@ -95,9 +181,11 @@ def agent_session_summary(session_id):
         - Avaliação Média da Turma: {session_info.get('rating_average', 0.0):.1f} estrelas ({session_info.get('rating_count', 0)} votos).
         
         DESEMPENHO NOS EXERCÍCIOS OBRIGATÓRIOS:
-        - Quantidade de respostas: {total_exercises}
-        - Média Geral: {avg_exercises:.1f} / 10
-        - Distribuição das Notas: {exercise_scores}
+        - Total de questões respondidas: {total_answered_questions}
+        - Total de acertos: {total_correct_answers}
+        - Taxa de acerto: {correctness_rate:.1f}%
+        - Média de score por submissão: {avg_submission_score:.1f} / 100
+        - Scores por submissão: {submission_scores}
         
         DESEMPENHO NAS ATIVIDADES EXTRAS (BÔNUS):
         - Quantidade de entregas: {total_extras}
@@ -110,6 +198,9 @@ def agent_session_summary(session_id):
         2. Existe interesse/adesão ao conteúdo extra?
         3. A sessão parece fluir bem ou está estagnada (poucas respostas)?
         """
+
+        if not Config.GROQ_API_KEY:
+            return jsonify({"error": "GROQ_API_KEY não configurada"}), 500
 
         # 4. Chamada LLM (Groq)
         client = OpenAI(
@@ -128,7 +219,7 @@ def agent_session_summary(session_id):
             # response_format removido para permitir texto livre
         )
 
-        content_text = response.choices[0].message.content
+        content_text = (response.choices[0].message.content or "").strip()
 
         # 4. Chamada ao Gemini
         # if not Config.GEMINI_API_KEY:
@@ -146,9 +237,12 @@ def agent_session_summary(session_id):
             "status": session_info['status'],
             "summary": content_text,
             "metrics": {
-                "exercise_avg": round(avg_exercises, 2),
+                "submission_score_avg": round(avg_submission_score, 2),
+                "correctness_rate": round(correctness_rate, 2),
+                "answered_questions": total_answered_questions,
+                "correct_answers": total_correct_answers,
                 "extra_avg": round(avg_extras, 2),
-                "participation_count": total_exercises + total_extras
+                "participation_count": len(submission_scores) + total_extras
             }
         }), 200
 
@@ -280,6 +374,170 @@ def get_student_grades_history(student_id):
 
     except Exception as e:
         logging.error(f"Erro ao buscar histórico do aluno {username}: {str(e)}")
+        return jsonify({"error": str(e)}), 500
+    finally:
+        if conn:
+            conn.close()
+
+
+@agente_control_bp.route('/agent/student_session_difficulty_summary', methods=['POST'])
+def student_session_difficulty_summary():
+    """
+    Recebe student_id e session_id, analisa respostas do exercício
+    (acertos/erros) e devolve um resumo de até 10 linhas sobre dificuldades.
+    """
+    data = request.get_json() or {}
+    student_id = data.get('student_id')
+    session_id = data.get('session_id')
+
+    if student_id is None or session_id is None:
+        return jsonify({"error": "student_id e session_id são obrigatórios"}), 400
+
+    conn = None
+    try:
+        db_url = current_app.config.get("SQLALCHEMY_DATABASE_URI") or os.getenv("DATABASE_URL")
+        conn = create_connection(db_url)
+
+        if not conn:
+            return jsonify({"error": "Falha na conexão com o banco de dados"}), 500
+
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT student_name, answers, score
+                FROM verified_answers
+                WHERE student_id = %s AND session_id = %s
+                ORDER BY id DESC
+                LIMIT 1
+            """, (str(student_id), session_id))
+            verified = cur.fetchone()
+
+        if not verified:
+            return jsonify({"error": "Respostas do aluno não encontradas para esta sessão"}), 404
+
+        raw_answers = verified.get('answers', [])
+        if isinstance(raw_answers, str):
+            try:
+                raw_answers = json.loads(raw_answers)
+            except Exception:
+                raw_answers = []
+
+        if not isinstance(raw_answers, list) or len(raw_answers) == 0:
+            return jsonify({"error": "Estrutura de respostas inválida ou vazia"}), 422
+
+        exercise_map = data.get('exercise_context_by_id', {})
+        if not isinstance(exercise_map, dict):
+            exercise_map = {}
+        exercise_list = list(exercise_map.values())
+        try:
+            exercise_list.sort(key=lambda ex: int(ex.get("id", 0)))
+        except Exception:
+            pass
+
+        acertos = []
+        erros = []
+        linhas_detalhes = []
+
+        for idx, ans in enumerate(raw_answers, start=1):
+            if not isinstance(ans, dict):
+                continue
+
+            exercise_id = ans.get('exercise_id')
+            exercise_data = exercise_map.get(str(exercise_id), {})
+            if not exercise_data and exercise_list:
+                # fallback para casos em que o exercise_id salvo não corresponde
+                # ao id real do domínio (ex: respostas com ids locais 101/102).
+                if 0 <= (idx - 1) < len(exercise_list):
+                    exercise_data = exercise_list[idx - 1]
+            options = _normalize_options(exercise_data.get('options', []))
+            options_txt = " | ".join([f"{i}: {opt}" for i, opt in enumerate(options)])
+
+            question_text = (
+                ans.get('question')
+                or ans.get('question_text')
+                or ans.get('enunciado')
+                or exercise_data.get('question')
+                or exercise_data.get('statement')
+                or f"Questão {exercise_id or idx}"
+            )
+            answer_raw = ans.get('answer', ans.get('user_answer', 'Não informado'))
+            correct_raw = (
+                ans.get('correct_answer')
+                or ans.get('expected_answer')
+                or exercise_data.get('correct')
+                or 'Não informada'
+            )
+            resposta_aluno = _resolve_option_text(answer_raw, options)
+            resposta_correta = _resolve_option_text(correct_raw, options)
+            correto = bool(ans.get('correct', False))
+
+            status = "ACERTOU" if correto else "ERROU"
+            linhas_detalhes.append(
+                f"- Ex. {exercise_id or idx}: {question_text} | opções: {options_txt} | resposta: {resposta_aluno} | correta: {resposta_correta} | {status}"
+            )
+
+            if correto:
+                acertos.append(question_text)
+            else:
+                erros.append(question_text)
+
+        prompt = f"""
+        Você é um tutor pedagógico especializado em diagnóstico de aprendizagem.
+        Analise as respostas de um aluno na sessão e identifique os assuntos em que ele tem dificuldade.
+
+        DADOS:
+        - Aluno: {verified.get('student_name', 'Aluno')}
+        - Student ID: {student_id}
+        - Sessão: {session_id}
+        - Score geral: {verified.get('score', 0)}
+        - Total de questões: {len(linhas_detalhes)}
+        - Acertos: {len(acertos)}
+        - Erros: {len(erros)}
+
+        QUESTÕES E RESPOSTAS:
+        {chr(10).join(linhas_detalhes)}
+
+        QUESTÕES ERRADAS (foco de dificuldade):
+        {erros if erros else ['Nenhuma questão errada']}
+
+        OBJETIVO:
+        Gere um resumo em português com EXATAMENTE 10 linhas curtas explicando:
+        1) Quais assuntos aparentam maior dificuldade.
+        2) Que padrão de erro aparece nas respostas.
+        3) O que priorizar na revisão do aluno.
+        4) Sugestões de estudo objetivas.
+
+        Não use markdown, não use JSON, não use título.
+        """
+
+        client = OpenAI(
+            api_key=Config.GROQ_API_KEY,
+            base_url="https://api.groq.com/openai/v1"
+        )
+
+        response = client.chat.completions.create(
+            model="llama-3.3-70b-versatile",
+            messages=[
+                {"role": "system", "content": "Você gera diagnósticos pedagógicos claros e objetivos."},
+                {"role": "user", "content": prompt}
+            ],
+            temperature=0.2
+        )
+
+        summary = (response.choices[0].message.content or "").strip()
+
+        return jsonify({
+            "student_id": str(student_id),
+            "session_id": int(session_id),
+            "score": verified.get('score', 0),
+            "total_questions": len(linhas_detalhes),
+            "correct_count": len(acertos),
+            "wrong_count": len(erros),
+            "questions_summary": linhas_detalhes,
+            "difficulty_summary": summary
+        }), 200
+
+    except Exception as e:
+        logging.error(f"Erro em student_session_difficulty_summary: {str(e)}")
         return jsonify({"error": str(e)}), 500
     finally:
         if conn:

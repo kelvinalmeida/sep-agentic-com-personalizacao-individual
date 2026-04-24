@@ -32,7 +32,7 @@ def ensure_tutor_chat_table(conn):
 @agente_user_bp.route('/students/summarize_preferences', methods=['POST'])
 def summarize_preferences():
     """
-    Agente User: Recebe IDs, busca via SQL Direto (psycopg2) e resume com Gemini.
+    Agente User: Recebe IDs, busca via SQL Direto (psycopg2) e resume com Grooq.
     """
     data = request.get_json()
     student_ids = data.get('student_ids', [])
@@ -118,7 +118,6 @@ def summarize_preferences():
             summary_dict = {
                 "resumo": content_text,
                 "perfil_turma": {},
-                "uso_email": "Indeterminado"
             }
 
         return jsonify({
@@ -128,6 +127,81 @@ def summarize_preferences():
     
     except Exception as e:
         logging.error(f"Erro no Agente User: {str(e)}")
+        return jsonify({"error": str(e)}), 500
+    finally:
+        if conn:
+            conn.close()
+
+@agente_user_bp.route('/agent/summarize_logged_user', methods=['POST'])
+def summarize_logged_user():
+    """
+    Recebe o ID do usuário logado e retorna um resumo curto (3 linhas) do perfil.
+    """
+    data = request.get_json() or {}
+    user_id = data.get('user_id')
+
+    if user_id is None:
+        return jsonify({"error": "user_id é obrigatório"}), 400
+
+    conn = None
+    try:
+        db_url = getattr(Config, 'SQLALCHEMY_DATABASE_URI', os.getenv('DATABASE_URL'))
+        conn = create_connection(db_url)
+
+        if not conn:
+            return jsonify({"error": "Falha na conexão com o banco de dados"}), 500
+
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT name, course, age, pref_content_type, pref_communication, pref_receive_email
+                FROM student
+                WHERE student_id = %s
+            """, (user_id,))
+            user_data = cur.fetchone()
+
+        if not user_data:
+            return jsonify({"error": "Usuário não encontrado"}), 404
+
+        recebe_email = user_data.get('pref_receive_email')
+        txt_email = "sim" if recebe_email else "não"
+
+        prompt = f"""
+        Você é um assistente pedagógico.
+        Analise os dados do aluno abaixo e raciocine sobre o perfil de estudo:
+        - Nome: {user_data.get('name') or 'Não informado'}
+        - Curso: {user_data.get('course') or 'Não informado'}
+        - Idade: {user_data.get('age') or 'Não informado'}
+        - Tipo de conteúdo preferido: {user_data.get('pref_content_type') or 'Não informado'}
+        - Canal de comunicação preferido: {user_data.get('pref_communication') or 'Não informado'}
+        - Prefere receber e-mail: {txt_email}
+
+        Gere um resumo em português com EXATAMENTE 3 linhas curtas.
+        Não use markdown, não enumere, não use título.
+        """
+
+        client = OpenAI(
+            api_key=Config.GROQ_API_KEY,
+            base_url="https://api.groq.com/openai/v1"
+        )
+
+        response = client.chat.completions.create(
+            model="llama-3.3-70b-versatile",
+            messages=[
+                {"role": "system", "content": "Você resume perfis de alunos de forma objetiva."},
+                {"role": "user", "content": prompt}
+            ],
+            temperature=0.3
+        )
+
+        summary = (response.choices[0].message.content or "").strip()
+
+        return jsonify({
+            "user_id": user_id,
+            "summary": summary
+        }), 200
+
+    except Exception as e:
+        logging.error(f"Erro ao resumir usuário logado: {str(e)}")
         return jsonify({"error": str(e)}), 500
     finally:
         if conn:

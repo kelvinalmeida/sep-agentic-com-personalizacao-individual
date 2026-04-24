@@ -1,9 +1,215 @@
-
 import requests
 import logging
 import re
-from flask import jsonify
+from flask import Blueprint, jsonify, request
 from ...services_routs import CONTROL_URL, STRATEGIES_URL, USER_URL, DOMAIN_URL
+
+agente_control_orch_bp = Blueprint('agente_control_orch_bp', __name__)
+
+
+def _build_exercise_context_for_session(session_id):
+    exercise_context_by_id = {}
+    session_resp = requests.get(f"{CONTROL_URL}/sessions/{session_id}", timeout=10)
+    if session_resp.status_code != 200:
+        return None, (
+            jsonify({
+                "error": "Não foi possível obter metadados da sessão no Control",
+                "details": session_resp.text
+            }),
+            session_resp.status_code
+        )
+
+    session_data = session_resp.json() or {}
+    domain_ids = session_data.get('domains', [])
+
+    for domain_id in domain_ids:
+        try:
+            ex_resp = requests.get(f"{DOMAIN_URL}/domains/{int(domain_id)}/exercises", timeout=10)
+            if ex_resp.status_code != 200:
+                logging.warning(
+                    "Falha ao buscar exercícios no Domain. session_id=%s domain_id=%s status=%s",
+                    session_id, domain_id, ex_resp.status_code
+                )
+                continue
+
+            exercises = ex_resp.json()
+            if isinstance(exercises, list):
+                for exercise in exercises:
+                    if not isinstance(exercise, dict):
+                        continue
+                    ex_id = exercise.get('id')
+                    if ex_id is not None:
+                        exercise_context_by_id[str(ex_id)] = exercise
+        except Exception as ex_err:
+            logging.warning(
+                "Erro ao buscar exercícios no Domain. session_id=%s domain_id=%s error=%s",
+                session_id, domain_id, str(ex_err)
+            )
+
+    # Fallback: quando a sessão não tem domains mapeados (ou falharam),
+    # tenta buscar todos os domínios para localizar os exercícios por ID.
+    if not exercise_context_by_id:
+        try:
+            all_domains_resp = requests.get(f"{DOMAIN_URL}/domains", timeout=10)
+            if all_domains_resp.status_code == 200:
+                all_domains = all_domains_resp.json()
+                if isinstance(all_domains, list):
+                    for domain in all_domains:
+                        exercises = domain.get('exercises', []) if isinstance(domain, dict) else []
+                        if not isinstance(exercises, list):
+                            continue
+                        for exercise in exercises:
+                            if not isinstance(exercise, dict):
+                                continue
+                            ex_id = exercise.get('id')
+                            if ex_id is not None:
+                                exercise_context_by_id[str(ex_id)] = exercise
+        except Exception as fallback_err:
+            logging.warning(
+                "Fallback de exercícios via /domains falhou. session_id=%s erro=%s",
+                session_id, str(fallback_err)
+            )
+
+    return exercise_context_by_id, None
+
+
+@agente_control_orch_bp.route('/orchestrator/agent/student_session_difficulty_summary', methods=['POST'])
+def orchestrate_student_session_difficulty_summary():
+    """
+    Orquestra a coleta de exercícios no Domain e envia o contexto enriquecido
+    para o endpoint do Control responsável pelo resumo de dificuldade.
+    """
+    data = request.get_json() or {}
+    student_id = data.get('student_id')
+    session_id = data.get('session_id')
+
+    if student_id is None or session_id is None:
+        return jsonify({"error": "student_id e session_id são obrigatórios"}), 400
+
+    try:
+        exercise_context_by_id, err_resp = _build_exercise_context_for_session(session_id)
+        if err_resp:
+            return err_resp
+
+        control_payload = {
+            "student_id": student_id,
+            "session_id": session_id,
+            "exercise_context_by_id": exercise_context_by_id
+        }
+        control_resp = requests.post(
+            f"{CONTROL_URL}/agent/student_session_difficulty_summary",
+            json=control_payload,
+            timeout=60
+        )
+
+        response_json = {}
+        try:
+            response_json = control_resp.json()
+        except Exception:
+            response_json = {"raw": control_resp.text}
+
+        return jsonify(response_json), control_resp.status_code
+
+    except Exception as e:
+        logging.error(f"Erro no orquestrador de student_session_difficulty_summary: {str(e)}")
+        return jsonify({"error": "Falha na orquestração do resumo de dificuldade"}), 500
+
+
+@agente_control_orch_bp.route('/orchestrator/agent/tudent_session_difficulty_summary', methods=['POST'])
+@agente_control_orch_bp.route('/orchestrator/agent/student_session_learning_support', methods=['POST'])
+def orchestrate_student_learning_support():
+    """
+    Junta:
+      1) dificuldades da sessão (Control /agent/student_session_difficulty_summary),
+      2) preferências do aluno (User /agent/summarize_logged_user),
+    e envia para o agente de estratégia recomendar vídeo do YouTube.
+    """
+    data = request.get_json() or {}
+    student_id = data.get('student_id')
+    session_id = data.get('session_id')
+
+    if student_id is None or session_id is None:
+        return jsonify({"error": "student_id e session_id são obrigatórios"}), 400
+
+    try:
+        exercise_context_by_id, err_resp = _build_exercise_context_for_session(session_id)
+        if err_resp:
+            return err_resp
+
+        control_payload = {
+            "student_id": student_id,
+            "session_id": session_id,
+            "exercise_context_by_id": exercise_context_by_id
+        }
+        difficulty_resp = requests.post(
+            f"{CONTROL_URL}/agent/student_session_difficulty_summary",
+            json=control_payload,
+            timeout=60
+        )
+        if difficulty_resp.status_code != 200:
+            return jsonify({
+                "error": "Falha ao obter resumo de dificuldade no Control",
+                "details": difficulty_resp.text
+            }), difficulty_resp.status_code
+
+        user_resp = requests.post(
+            f"{USER_URL}/agent/summarize_logged_user",
+            json={"user_id": student_id},
+            timeout=30
+        )
+        if user_resp.status_code != 200:
+            return jsonify({
+                "error": "Falha ao obter preferências no User",
+                "details": user_resp.text
+            }), user_resp.status_code
+
+        difficulty_data = difficulty_resp.json()
+        user_data = user_resp.json()
+
+        strategy_payload = {
+            "student_id": student_id,
+            "session_id": session_id,
+            "difficulty_summary": difficulty_data.get("difficulty_summary", ""),
+            "questions_summary": difficulty_data.get("questions_summary", []),
+            "wrong_count": difficulty_data.get("wrong_count", 0),
+            "profile_summary": user_data.get("summary", "")
+        }
+        strategy_resp = requests.post(
+            f"{STRATEGIES_URL}/agent/recommend_youtube_video",
+            json=strategy_payload,
+            timeout=60
+        )
+        study_text_resp = requests.post(
+            f"{STRATEGIES_URL}/agent/generate_personalized_study_text",
+            json=strategy_payload,
+            timeout=60
+        )
+
+        strategy_json = {}
+        try:
+            strategy_json = strategy_resp.json()
+        except Exception:
+            strategy_json = {"raw": strategy_resp.text}
+
+        study_text_json = {}
+        try:
+            study_text_json = study_text_resp.json()
+        except Exception:
+            study_text_json = {"raw": study_text_resp.text}
+
+        return jsonify({
+            "student_id": student_id,
+            "session_id": session_id,
+            "difficulty_data": difficulty_data,
+            "profile_data": user_data,
+            "video_recommendation": strategy_json,
+            "personalized_study_text": study_text_json
+        }), 200
+
+    except Exception as e:
+        logging.error(f"Erro no orquestrador de learning support: {str(e)}")
+        return jsonify({"error": "Falha na orquestração de suporte de aprendizagem"}), 500
+
 
 def execute_agent_logic(session_id, session_json):
     """
