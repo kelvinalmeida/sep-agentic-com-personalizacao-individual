@@ -27,7 +27,7 @@ def create_app():
 
     from app.routes.strategies_routes import strategies_bp
     from app.routes.agente_strategies_routes import agente_strategies_bp
-    from app.routes.agente_video_routes import agente_video_bp
+    from app.routes.agente_perso_individual import agente_perso_individual_bp
 
     # colocar a variavel config.env no environment no flask
 
@@ -36,7 +36,7 @@ def create_app():
     # Registrar o blueprint
     app.register_blueprint(strategies_bp)
     app.register_blueprint(agente_strategies_bp)
-    app.register_blueprint(agente_video_bp)
+    app.register_blueprint(agente_perso_individual_bp)
 
     # Inicializar extensões
     db.init_app(app)
