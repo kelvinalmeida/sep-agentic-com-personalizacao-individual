@@ -126,6 +126,14 @@ def decide_next_tactic():
     
     student_profile_summary = data.get('student_profile_summary', 'Perfil não informado.')
     performance_summary = data.get('performance_summary', 'Sem dados de performance.')
+    class_profile_summary = data.get('class_profile_summary', 'Perfil da turma não informado.')
+    student_history_summary = data.get('student_history_summary', 'Histórico do aluno não informado.')
+    current_session_student_performance = data.get(
+        'current_session_student_performance',
+        'Sem dados da performance individual na sessão atual.'
+    )
+    last_session_rating = data.get('last_session_rating', None)
+    personalization_rules = data.get('personalization_rules', [])
     
     domain_name = data.get('domain_name', 'Tópico Geral')
     domain_description = data.get('domain_description', '')
@@ -224,6 +232,16 @@ def decide_next_tactic():
         === PERFIL DO ALUNO ===
         {student_profile_summary}
 
+        === PERFIL DA TURMA ===
+        {class_profile_summary}
+
+        === HISTÓRICO DO ALUNO ===
+        {student_history_summary}
+
+        === PERFORMANCE DO ALUNO NESTA SESSÃO ===
+        {current_session_student_performance}
+        Última avaliação registrada para a sessão: {last_session_rating if last_session_rating is not None else "não informada"}
+
         === SITUAÇÃO ATUAL ===
         {performance_summary}
         {history_instruction}
@@ -236,6 +254,7 @@ def decide_next_tactic():
         2. Considere o tempo disponível.
         3. Se o desempenho for RUIM, simplifique. Se for BOM, aprofunde.
         4. Quando as taticas disponíveis acabarem, encerre a sessão.
+        5. Regras adicionais de personalização: {personalization_rules if personalization_rules else "Nenhuma regra adicional."}
         
 
         === SAÍDA (JSON) ===
