@@ -104,16 +104,13 @@ def agent_session_summary(session_id):
             """, (session_id,))
             total_strategies = cur.fetchone()['total']
 
-            # C. Notas dos Exercícios (Lista de inteiros)
-            # Pegamos apenas os scores para análise estatística
+            # C. Dados das respostas verificadas da sessão
             cur.execute("""
-                SELECT score 
+                SELECT answers, score
                 FROM verified_answers 
                 WHERE session_id = %s
             """, (session_id,))
-            exercise_rows = cur.fetchall()
-            # Ex: [10, 5, 8, 9]
-            exercise_scores = [row['score'] for row in exercise_rows]
+            verified_rows = cur.fetchall()
 
             # D. Notas Extras (Lista de floats)
             cur.execute("""
@@ -123,12 +120,51 @@ def agent_session_summary(session_id):
             """, (session_id,))
             extra_rows = cur.fetchall()
             # Ex: [9.5, 8.0]
-            extra_scores = [row['extra_notes'] for row in extra_rows]
+            extra_scores = [
+                float(row['extra_notes'])
+                for row in extra_rows
+                if row.get('extra_notes') is not None
+            ]
 
         # 2. Estatísticas Gerais (Cálculos Python)
-        total_exercises = len(exercise_scores)
-        avg_exercises = sum(exercise_scores) / total_exercises if total_exercises > 0 else 0
-        
+        submission_scores = []
+        total_answered_questions = 0
+        total_correct_answers = 0
+
+        for row in verified_rows:
+            raw_score = row.get('score') if isinstance(row, dict) else None
+            if raw_score is not None:
+                try:
+                    submission_scores.append(float(raw_score))
+                except (TypeError, ValueError):
+                    pass
+
+            answers = row.get('answers') if isinstance(row, dict) else []
+            if isinstance(answers, str):
+                try:
+                    answers = json.loads(answers)
+                except Exception:
+                    answers = []
+
+            if not isinstance(answers, list):
+                continue
+
+            for ans in answers:
+                if not isinstance(ans, dict):
+                    continue
+                total_answered_questions += 1
+                if bool(ans.get('correct')) is True:
+                    total_correct_answers += 1
+
+        avg_submission_score = (
+            sum(submission_scores) / len(submission_scores)
+            if submission_scores else 0
+        )
+        correctness_rate = (
+            (total_correct_answers / total_answered_questions) * 100
+            if total_answered_questions > 0 else 0
+        )
+
         total_extras = len(extra_scores)
         avg_extras = sum(extra_scores) / total_extras if total_extras > 0 else 0
 
@@ -145,9 +181,11 @@ def agent_session_summary(session_id):
         - Avaliação Média da Turma: {session_info.get('rating_average', 0.0):.1f} estrelas ({session_info.get('rating_count', 0)} votos).
         
         DESEMPENHO NOS EXERCÍCIOS OBRIGATÓRIOS:
-        - Quantidade de respostas: {total_exercises}
-        - Média Geral: {avg_exercises:.1f} / 10
-        - Distribuição das Notas: {exercise_scores}
+        - Total de questões respondidas: {total_answered_questions}
+        - Total de acertos: {total_correct_answers}
+        - Taxa de acerto: {correctness_rate:.1f}%
+        - Média de score por submissão: {avg_submission_score:.1f} / 100
+        - Scores por submissão: {submission_scores}
         
         DESEMPENHO NAS ATIVIDADES EXTRAS (BÔNUS):
         - Quantidade de entregas: {total_extras}
@@ -160,6 +198,9 @@ def agent_session_summary(session_id):
         2. Existe interesse/adesão ao conteúdo extra?
         3. A sessão parece fluir bem ou está estagnada (poucas respostas)?
         """
+
+        if not Config.GROQ_API_KEY:
+            return jsonify({"error": "GROQ_API_KEY não configurada"}), 500
 
         # 4. Chamada LLM (Groq)
         client = OpenAI(
@@ -178,7 +219,7 @@ def agent_session_summary(session_id):
             # response_format removido para permitir texto livre
         )
 
-        content_text = response.choices[0].message.content
+        content_text = (response.choices[0].message.content or "").strip()
 
         # 4. Chamada ao Gemini
         # if not Config.GEMINI_API_KEY:
@@ -196,9 +237,12 @@ def agent_session_summary(session_id):
             "status": session_info['status'],
             "summary": content_text,
             "metrics": {
-                "exercise_avg": round(avg_exercises, 2),
+                "submission_score_avg": round(avg_submission_score, 2),
+                "correctness_rate": round(correctness_rate, 2),
+                "answered_questions": total_answered_questions,
+                "correct_answers": total_correct_answers,
                 "extra_avg": round(avg_extras, 2),
-                "participation_count": total_exercises + total_extras
+                "participation_count": len(submission_scores) + total_extras
             }
         }), 200
 
