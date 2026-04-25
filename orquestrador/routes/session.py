@@ -339,38 +339,59 @@ def prev_tactic(session_id, current_user=None):
 def submit_answer(current_user=None):
     try:
         data = request.get_json()
+        student_id = data.get("student_id")
+        session_id = data["session_id"]
 
-        # Corrrige as respostas do exercício
+        # Busca o índice de tática atual do aluno
+        tactic_index = 0
+        if student_id:
+            progress_res = requests.get(f"{CONTROL_URL}/sessions/{session_id}/student/{student_id}/tactic_index")
+            if progress_res.status_code == 200:
+                tactic_index = progress_res.json().get("current_tactic_index", 0)
+
+        # Corrige as respostas do exercício
         verified_answers = requests.post(f"{DOMAIN_URL}/exerc/testscores", json=data).json()
 
-        playload = {
+        payload = {
             "student_id": verified_answers["student_id"],
             "student_name": verified_answers["student_name"],
-            "session_id": data["session_id"], 
+            "session_id": session_id,
             "answers": verified_answers["answers"],
-            "score": verified_answers["score"]
+            "score": verified_answers["score"],
+            "tactic_index": tactic_index
         }
 
-        logging.basicConfig(level=logging.INFO)
-        logging.info("🔍 verified_answers: %s", playload)
+        logging.info("🔍 submit_answer payload: %s", payload)
         sys.stdout.flush()
-        
-        # Envia as respostas verificadas para o microserviço de controle
-        resp = requests.post(f"{CONTROL_URL}/sessions/submit_answer", json=playload)
 
-        if resp.status_code == 409:
-            return jsonify({"resp": "As respostas já foram registradas para esse estudante!"}), 200
+        resp = requests.post(f"{CONTROL_URL}/sessions/submit_answer", json=payload)
 
         if resp.status_code not in [200, 201]:
-             return jsonify({"error": "Erro ao salvar resposta no controle", "details": resp.text}), resp.status_code
+            return jsonify({"error": "Erro ao salvar resposta no controle", "details": resp.text}), resp.status_code
 
-        # Por enquanto apenas retorna os dados recebidos
-        return jsonify({"resp": "Respostas enviadas com sucesso!"}), 200
+        resp_data = resp.json()
+        passed = resp_data.get("passed", False)
+        score = resp_data.get("score", 0)
+        student_tactic_index = resp_data.get("student_tactic_index", tactic_index)
+
+        total = len(data.get('answers') or []) or 1
+        pct = int((score / total) * 100)
+        if passed:
+            msg = f"Parabéns! Você acertou {score}/{total} questões ({pct}%) e avançou para a próxima tática."
+        else:
+            msg = f"Você acertou {score}/{total} questões ({pct}%). São necessários 70% para avançar. Tente novamente!"
+
+        return jsonify({
+            "resp": msg,
+            "passed": passed,
+            "score": score,
+            "student_tactic_index": student_tactic_index
+        }), 200
 
     except Exception as e:
         import traceback
         logging.info("❌ Erro interno no servidor:")
-        traceback.print_exc()  # Mostra a stack completa do erro
+        traceback.print_exc()
         return jsonify({"error": str(e)}), 500
     
 
@@ -394,9 +415,26 @@ def add_extra_notes(student_id, current_user=None):
     return Response(status=204)
   
 
+@session_bp.route('/sessions/<int:session_id>/student_start', methods=['POST'])
+@token_required
+def student_start_own(session_id, current_user=None):
+    if not current_user or current_user.get('type') != 'student':
+        return jsonify({"error": "Apenas alunos podem iniciar seu próprio percurso"}), 403
+    student_id = current_user.get('id')
+    try:
+        resp = requests.post(f"{CONTROL_URL}/sessions/{session_id}/student/{student_id}/start")
+        try:
+            return jsonify(resp.json()), resp.status_code
+        except Exception:
+            return resp.text, resp.status_code
+    except RequestException as e:
+        return jsonify({"error": str(e)}), 503
+
+
 @session_bp.route('/sessions/<int:session_id>/current_tactic', methods=['GET'])
 def get_current_tactic(session_id):
-    # Buscar a sessão
+    student_id = request.args.get('student_id')
+
     session_response = requests.get(f"{CONTROL_URL}/sessions/{session_id}")
 
     if session_response.status_code != 200:
@@ -407,8 +445,20 @@ def get_current_tactic(session_id):
     if session_json['status'] != 'in-progress':
         return jsonify({'message': 'Session not started or finished', 'session_status': session_json['status']}), 200
 
-    # Get Current Tactic Index from Session
-    current_tactic_index = session_json.get("current_tactic_index", 0)
+    # Índice e timer de tática: individual por aluno, ou global para professor
+    student_tactic_started_at = None
+    if student_id:
+        progress_res = requests.get(f"{CONTROL_URL}/sessions/{session_id}/student/{student_id}/tactic_index")
+        if progress_res.status_code == 200:
+            prog = progress_res.json()
+            if not prog.get("student_started", True):
+                return jsonify({'session_status': 'not_started'})
+            current_tactic_index = prog.get("current_tactic_index", 0)
+            student_tactic_started_at = prog.get("tactic_started_at")
+        else:
+            current_tactic_index = session_json.get("current_tactic_index", 0)
+    else:
+        current_tactic_index = session_json.get("current_tactic_index", 0)
 
     # Fetch all tactics
     tactics = []
@@ -422,17 +472,16 @@ def get_current_tactic(session_id):
 
     # Check bounds
     if current_tactic_index >= len(tactics):
-        # Se ultrapassou o número de táticas, pode considerar finalizada ou apenas esperar
-        # Se a intenção é finalizar automaticamente quando acaba:
-        # requests.post(f"{CONTROL_URL}/sessions/end/{session_id}")
-        # return jsonify({'message': 'All tactics completed', 'session_status': 'finished'})
+        if student_id:
+            # Aluno terminou todas as suas táticas — não encerra a sessão global
+            return jsonify({'message': 'No more tactics', 'session_status': 'student_finished'})
 
+        # Visão global (professor): encerra a sessão para todos
         if session_json['status'] == 'in-progress':
             logging.info(f"Fim das táticas atingido para a sessão {session_id}. Encerrando automaticamente.")
             requests.post(f"{CONTROL_URL}/sessions/end/{session_id}")
             session_json['status'] = 'finished'
 
-        # Mas como agora é manual, talvez só mostre que acabou
         return jsonify({'message': 'No more tactics', 'session_status': 'finished'})
 
     current_tactic = tactics[current_tactic_index]
@@ -445,8 +494,8 @@ def get_current_tactic(session_id):
     remaining = 0
     elapsed_time = 0
     
-    # Fallback to current time if not set (should not happen with new logic)
-    started_at_str = session_json.get("current_tactic_started_at")
+    # Timer individual do aluno; fallback para o timer global da sessão
+    started_at_str = student_tactic_started_at or session_json.get("current_tactic_started_at")
 
     if started_at_str:
         try:

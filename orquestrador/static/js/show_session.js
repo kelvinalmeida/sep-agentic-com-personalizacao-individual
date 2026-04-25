@@ -6,8 +6,9 @@ document.addEventListener("DOMContentLoaded", () => {
     let apresentacaoSicrona_isActive = false;
     let reuso_isActive = false;
     let envio_informacao_isActive = false;
-    let regras_isActive = false; // Novo flag para Regras
+    let regras_isActive = false;
     let current_tatic_description = 'Nenhuma tática ativa no momento.';
+    let activeTacticIndex = null;
 
     const session_id = window.session_id;
     const token = window.token;
@@ -37,14 +38,11 @@ document.addEventListener("DOMContentLoaded", () => {
 
     taticDescription("Sessão finalizada ou sem tática ativa no momento.");
     function taticDescription(description) {
-
         if (description === 'hidden' || description === undefined || description.trim() === "") {
             description = "Nenhuma descrição disponível";
         }
-
         const descriptionElement = document.getElementById("current_tatic_description");
-
-        descriptionElement.innerText = description;
+        if (descriptionElement) descriptionElement.innerText = description;
     }
 
 
@@ -58,7 +56,7 @@ document.addEventListener("DOMContentLoaded", () => {
     }
 
 
-    function debateSicrono(id_chat) {
+    function debateSicrono(id_chat, targetContainerId = "tatic_here") {
         fetch(`/chat_fragment/${id_chat}/${session_id}`)
             .then(response => response.text())
             .then(html => {
@@ -78,11 +76,8 @@ document.addEventListener("DOMContentLoaded", () => {
                         newScript.src = oldScript.src;
                         newScript.onload = () => {
                             loadedScripts++;
-                            // Só inicializa se for o último script carregado ou se só houver ele
                             if (loadedScripts === totalScripts && typeof initializeChatComponent === "function") {
-                                if (currentChatUI) {
-                                    currentChatUI.destroy();
-                                }
+                                if (currentChatUI) currentChatUI.destroy();
                                 currentChatUI = initializeChatComponent();
                             }
                         };
@@ -93,20 +88,15 @@ document.addEventListener("DOMContentLoaded", () => {
                     }
                 });
 
-                // Caso não tenha scripts externos, mas tenha inline com a função já definida
                 if (totalScripts === 0 && typeof initializeChatComponent === "function") {
-                    if (currentChatUI) {
-                        currentChatUI.destroy();
-                    }
+                    if (currentChatUI) currentChatUI.destroy();
                     currentChatUI = initializeChatComponent();
                 }
 
-                const chatContainer = document.getElementById("tatic_here");
-                chatContainer.innerHTML = ""; // Limpa o conteúdo anterior
+                const chatContainer = document.getElementById(targetContainerId);
+                chatContainer.innerHTML = "";
                 chatContainer.appendChild(chatHere);
             });
-
-        // realod_page();
     }
 
 
@@ -117,11 +107,14 @@ document.addEventListener("DOMContentLoaded", () => {
         // Resetar estado de ativação a cada nova tática
         taticaAtiva = false;
 
-        // Opcional: resetar todos os flags
         debateSicrono_isActive = false;
         apresentacaoSicrona_isActive = false;
         reuso_isActive = false;
         envio_informacao_isActive = false;
+        regras_isActive = false;
+
+        // Remove os elementos da tática anterior antes de montar a nova
+        removerElemento();
 
         countdownInterval = setInterval(() => {
             // Evitar auto-avanço se for a tática de "Regra", pois ela tem lógica própria de execução
@@ -129,44 +122,15 @@ document.addEventListener("DOMContentLoaded", () => {
 
             if (timeLeft <= 0 && !isRegra) {
                 clearInterval(countdownInterval);
-                document.getElementById("tacticTimer").innerText = "Concluído";
-                // --- CÓDIGO NOVO: Tenta avançar automaticamente ---
-                const nextBtn = document.getElementById("nextTacticBtn");
-                // Verifica se o botão existe e não está oculto (é professor)
-                if (nextBtn && !nextBtn.classList.contains("d-none")) {
-                    console.log("Tempo esgotado. Avançando para a próxima tática/estratégia...");
-                    
-                    const agentToggle = document.getElementById("agentToggle");
-                    if (agentToggle && agentToggle.checked) {
-                        showThinking();
-                    }
-
-                    // Chama a rota de avançar
-                    fetch(`/sessions/${session_id}/next_tactic`, { method: 'POST' })
-                    .then(response => {
-                        hideThinking();
-                        if(response.ok) {
-                            response.json().then(data => {
-                                if (data.agent_decision) {
-                                    showReasoning(data.agent_decision);
-                                    sessionStorage.setItem("latestReasoning_" + session_id, JSON.stringify(data.agent_decision));
-                                }
-                                fetchCurrentTactic(session_id);
-                            });
-                        }
-                    })
-                    .catch(err => {
-                        hideThinking();
-                    });
-                } else {
-                    // Se for aluno, apenas atualiza para ver se o professor mudou
-                    fetchCurrentTactic(session_id); 
-                }
+                const timerEl = document.getElementById("tacticTimer");
+                if (timerEl) timerEl.innerText = "Concluído";
+                fetchCurrentTactic(session_id);
             } else {
                 let minutes = Math.floor(timeLeft / 60);
                 let seconds = timeLeft % 60;
                 let formattedTime = `${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`;
-                document.getElementById("tacticTimer").innerText = formattedTime;
+                const timerEl2 = document.getElementById("tacticTimer");
+                if (timerEl2) timerEl2.innerText = formattedTime;
 
                 timeLeft--;
 
@@ -400,6 +364,9 @@ document.addEventListener("DOMContentLoaded", () => {
                                     }
 
 
+                                    const submitBtn = form.querySelector('button[type="submit"]');
+                                    if (submitBtn) submitBtn.disabled = true;
+
                                     fetch("/sessions/submit_answer", {
                                         method: "POST",
                                         headers: {
@@ -417,20 +384,31 @@ document.addEventListener("DOMContentLoaded", () => {
                                             if (!response.ok) {
                                                 throw new Error("Erro ao enviar respostas");
                                             }
+                                            return response.json();
+                                        })
+                                        .then(function(respData) {
+                                            const feedbackEl = document.getElementById("formFeedback");
+                                            feedbackEl.textContent = respData.resp;
+                                            console.log("Respostas enviadas:", respData);
 
-                                            response.json().then(data => {
-                                                document.getElementById("formFeedback").textContent = data.resp;
-                                                console.log("Respostas enviadas:", data);
-                                                // form.reset(); // Limpa o formulário após o envio
-                                            });
+                                            if (respData.passed) {
+                                                feedbackEl.className = "mt-2 text-success fw-bold";
+                                                // Atualiza a tática exibida após avançar
+                                                setTimeout(() => fetchCurrentTactic(session_id), 1500);
+                                            } else {
+                                                feedbackEl.className = "mt-2 text-danger fw-bold";
+                                                // Reabilita o formulário para nova tentativa
+                                                form.reset();
+                                                if (submitBtn) submitBtn.disabled = false;
+                                            }
+                                        })
+                                        .catch(function(err) {
+                                            console.error("Erro ao enviar respostas:", err);
+                                            const feedbackEl = document.getElementById("formFeedback");
+                                            feedbackEl.textContent = "Erro ao enviar respostas. Tente novamente.";
+                                            feedbackEl.className = "mt-2 text-danger";
+                                            if (submitBtn) submitBtn.disabled = false;
                                         });
-                                    // .then(response => {
-                                    //     alert("Respostas enviadas com sucesso!");
-                                    //     form.reset();
-                                    // })
-                                    // .catch(err => {
-                                    //     console.error("Erro ao enviar respostas:", err);
-                                    // });
                                 });
                             })
                             .catch(err => {
@@ -674,13 +652,24 @@ document.addEventListener("DOMContentLoaded", () => {
         location.reload();
     }
 
-    function fetchCurrentTactic(session_id) {
-        // console.log(session_status);
+    function showStudentStartArea() {
+        const startArea = document.getElementById("student-start-area");
+        const tacticArea = document.getElementById("student-tactic-area");
+        if (startArea) startArea.style.display = '';
+        if (tacticArea) tacticArea.style.display = 'none';
+    }
 
-        fetch(`/sessions/${session_id}/current_tactic`)
-            .then(response => {
-                return response.json();
-            })
+    function showStudentTacticArea() {
+        const startArea = document.getElementById("student-start-area");
+        const tacticArea = document.getElementById("student-tactic-area");
+        if (startArea) startArea.style.display = 'none';
+        if (tacticArea) tacticArea.style.display = '';
+    }
+
+    function fetchCurrentTactic(session_id) {
+        const studentParam = my_id ? `?student_id=${my_id}` : '';
+        fetch(`/sessions/${session_id}/current_tactic${studentParam}`)
+            .then(response => response.json())
             .then(data => {
                 console.log("Dados da tática atual: ", data);
 
@@ -690,13 +679,47 @@ document.addEventListener("DOMContentLoaded", () => {
                     return;
                 }
 
+                if (data.session_status === 'not_started') {
+                    showStudentStartArea();
+                    const btn = document.getElementById("studentStartBtn");
+                    if (btn) {
+                        btn.disabled = false;
+                        btn.innerHTML = '<i class="bi bi-play-circle-fill me-2"></i> Iniciar Minha Sessão';
+                    }
+                    return;
+                }
+
+                if (data.session_status === 'aguardando') {
+                    showStudentStartArea();
+                    return;
+                }
+
                 if (data.tactic && data.session_status === 'in-progress') {
-                    document.getElementById("tacticName").innerText = data.tactic.name;
+                    showStudentTacticArea();
+                    const nameEl = document.getElementById("tacticName");
+                    if (nameEl) nameEl.innerText = data.tactic.name;
                     taticDescription(data.tactic.description || "Nenhuma descrição disponível");
-                    startCountdown(data.remaining_time, data.strategy_tactics, data.tactic.name);
+                    if (data.current_tactic_index !== activeTacticIndex) {
+                        activeTacticIndex = data.current_tactic_index;
+                        startCountdown(data.remaining_time, data.strategy_tactics, data.tactic.name);
+                    }
+                } else if (data.session_status === 'student_finished') {
+                    activeTacticIndex = null;
+                    showStudentTacticArea();
+                    const nameEl = document.getElementById("tacticName");
+                    const timerEl = document.getElementById("tacticTimer");
+                    if (nameEl) nameEl.innerText = "Você concluiu todas as táticas!";
+                    if (timerEl) timerEl.innerText = "--";
+                    qual_tatica_esta_ativa(false, false, false, false, false);
+                    removerElemento();
+                    taticDescription("Parabéns! Você completou todas as táticas desta sessão. Aguarde o encerramento oficial pelo professor.");
+                    clearInterval(countdownInterval);
                 } else {
-                    document.getElementById("tacticName").innerText = "Sessão finalizada";
-                    document.getElementById("tacticTimer").innerText = "--";
+                    activeTacticIndex = null;
+                    const nameEl = document.getElementById("tacticName");
+                    const timerEl = document.getElementById("tacticTimer");
+                    if (nameEl) nameEl.innerText = "Sessão finalizada";
+                    if (timerEl) timerEl.innerText = "--";
                     qual_tatica_esta_ativa(false, false, false, false, false);
                     removerElemento();
                     taticDescription("Sessão finalizada ou sem tática ativa no momento.");
@@ -705,177 +728,92 @@ document.addEventListener("DOMContentLoaded", () => {
             })
             .catch(error => {
                 console.error("Erro ao buscar tática atual:", error.message);
-                document.getElementById("tacticName").innerText = "Erro ao carregar";
-                document.getElementById("tacticTimer").innerText = "--";
+                const nameEl = document.getElementById("tacticName");
+                const timerEl = document.getElementById("tacticTimer");
+                if (nameEl) nameEl.innerText = "Erro ao carregar";
+                if (timerEl) timerEl.innerText = "--";
             });
     }
 
 
-    // Inicia a sessão ao clicar
-    document.getElementById("startSessionBtn").addEventListener("click", () => {
-        console.log("Iniciando a sessão", session_id);
-
-        const agentToggle = document.getElementById("agentToggle");
-        const useAgent = agentToggle ? agentToggle.checked : false;
-
-        fetch(`/sessions/start/${session_id}`, {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json'
-            },
-            body: JSON.stringify({ use_agent: useAgent })
-        })
-            .then(response => {
-                console.log(response);
+    // ===== PROFESSOR =====
+    const startSessionBtn = document.getElementById("startSessionBtn");
+    if (startSessionBtn) {
+        startSessionBtn.addEventListener("click", () => {
+            fetch(`/sessions/start/${session_id}`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ use_agent: false })
+            }).then(response => {
                 if (response.ok) {
-                    // console.log(response)
-                    fetchCurrentTactic(session_id);
-                    // Disable toggle after start
-                    if(agentToggle) agentToggle.disabled = true;
+                    location.reload();
                 } else {
                     alert("Sessão já iniciada ou erro ao iniciar.");
                 }
             });
-    });
+        });
+    }
 
+    const endSessionBtn = document.getElementById("endSessionBtn");
+    if (endSessionBtn) {
+        endSessionBtn.addEventListener("click", () => {
+            const confirmEnd = prompt("Tem certeza que deseja encerrar a sessão? Digite 'sim' para confirmar.");
+            if (confirmEnd && confirmEnd.trim().toLowerCase() === "sim") {
+                fetch(`/sessions/end/${session_id}`)
+                    .then(response => {
+                        if (response.ok) {
+                            location.reload();
+                        } else {
+                            alert("Erro ao encerrar a sessão.");
+                        }
+                    })
+                    .catch(() => alert("Erro ao tentar encerrar a sessão."));
+            } else {
+                alert("Encerramento cancelado.");
+            }
+        });
+    }
 
-    document.getElementById("endSessionBtn").addEventListener("click", () => {
-        const confirmEnd = prompt("Tem certeza que deseja encerrar a sessão? Digite 'sim' para confirmar.");
-
-        if (confirmEnd && confirmEnd.trim().toLowerCase() === "sim") {
-            console.log("Encerrando a sessão");
-
-            fetch(`/sessions/end/${session_id}`)
-                .then(response => {
-                    if (response.ok) {
-                        console.log("Sessão encerrada com sucesso");
-                        location.reload(); // só recarrega após sucesso
-                    } else {
-                        alert("Erro ao encerrar a sessão.");
-                    }
-                })
-                .catch(err => {
-                    console.error("Erro na requisição:", err);
-                    alert("Erro ao tentar encerrar a sessão.");
-                });
-
-        } else {
-            alert("Encerramento cancelado.");
+    if (window.user_type === 'teacher') {
+        if (window.teacher_debate_chat_id !== null && window.teacher_debate_chat_id !== undefined) {
+            const debateSection = document.getElementById("teacher-debate-section");
+            if (debateSection) debateSection.classList.remove("d-none");
+            debateSicrono(window.teacher_debate_chat_id, "teacher_debate_chat");
         }
-    });
+        if (window.teacher_has_envio) {
+            const envioSection = document.getElementById("teacher-envio-section");
+            if (envioSection) envioSection.classList.remove("d-none");
+        }
+    }
 
-
-    // Adiciona listeners para os botões de avançar e retroceder
-    const prevBtn = document.getElementById("prevTacticBtn");
-    if(prevBtn){
-        prevBtn.addEventListener("click", () => {
-             fetch(`/sessions/${session_id}/prev_tactic`, { method: 'POST' })
-             .then(response => {
-                if(response.ok) {
+    // ===== ALUNO =====
+    const studentStartBtn = document.getElementById("studentStartBtn");
+    if (studentStartBtn) {
+        studentStartBtn.addEventListener("click", () => {
+            studentStartBtn.disabled = true;
+            fetch(`/sessions/${session_id}/student_start`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Authorization': `Bearer ${token}`
+                }
+            }).then(response => {
+                if (response.ok) {
+                    showStudentTacticArea();
                     fetchCurrentTactic(session_id);
                 } else {
-                    console.error("Erro ao retroceder tática");
+                    studentStartBtn.disabled = false;
+                    alert("Erro ao iniciar a sessão. Tente novamente.");
                 }
-             });
+            }).catch(() => {
+                studentStartBtn.disabled = false;
+                alert("Erro ao iniciar a sessão. Tente novamente.");
+            });
         });
     }
 
-    function showThinking() {
-        const thinkingDiv = document.getElementById("agentThinking");
-        if(thinkingDiv) {
-            thinkingDiv.classList.remove("d-none");
-        }
-
-        const reasoningContainer = document.getElementById("agentReasoningContainer");
-        if(reasoningContainer) reasoningContainer.innerHTML = "";
-
-        // Clear saved reasoning when starting new thought process
-        sessionStorage.removeItem("latestReasoning_" + session_id);
+    if (window.user_type === 'student') {
+        fetchCurrentTactic(session_id);
+        setInterval(() => fetchCurrentTactic(session_id), 5000);
     }
-
-    function hideThinking() {
-        const thinkingDiv = document.getElementById("agentThinking");
-        if(thinkingDiv) thinkingDiv.classList.add("d-none");
-    }
-
-    function showReasoning(agent_decision) {
-        if (agent_decision && agent_decision.reasoning) {
-            const container = document.getElementById("agentReasoningContainer");
-            if (container) {
-                // Novo HTML estruturado
-                container.innerHTML = `
-                    <div class="agent-reasoning-card">
-                        <div class="reasoning-header">
-                            <i class="bi bi-lightbulb-fill text-warning"></i>
-                            <span>Decisão do Agente de Estratégia</span>
-                        </div>
-                        <div class="reasoning-content">
-                            ${agent_decision.reasoning}
-                        </div>
-                        <div class="mt-2 text-end">
-                            <span class="badge bg-light text-dark border">Tática Escolhida: ${agent_decision.tactic_name || 'Automática'}</span>
-                        </div>
-                    </div>
-                `;
-            }
-        }
-    }
-
-    const nextBtn = document.getElementById("nextTacticBtn");
-    if(nextBtn){
-        nextBtn.addEventListener("click", () => {
-             // Mostra spinner se o agente estiver ativo (checamos a toggle se possível, ou sempre mostramos e escondemos rápido se não for)
-             // A toggle pode estar desabilitada mas checked.
-             const agentToggle = document.getElementById("agentToggle");
-
-             if (agentToggle && agentToggle.checked) {
-                 showThinking();
-             }
-
-             fetch(`/sessions/${session_id}/next_tactic`, { method: 'POST' })
-             .then(response => {
-                 hideThinking();
-                 if(response.ok) {
-                    response.json().then(data => {
-                        if (data.agent_decision) {
-                            showReasoning(data.agent_decision);
-                            sessionStorage.setItem("latestReasoning_" + session_id, JSON.stringify(data.agent_decision));
-                        }
-                        fetchCurrentTactic(session_id);
-                    });
-                 } else {
-                     console.error("Erro ao avançar tática");
-                 }
-             })
-             .catch(err => {
-                 hideThinking();
-                 console.error(err);
-             });
-        });
-    }
-
-    // Inicia o chat automaticamente se a sessão já estiver em andamento
-    function iniciarChat() {
-        let session_status = '';
-
-        fetch(`/sessions/status/${session_id}`)
-            .then(response => {
-                return response.json()
-            }).then(data => {
-                // console.log("Status da sessão: ", data);
-                if (data.status === 'in-progress') {
-                    // session_status = data.status;
-                    fetchCurrentTactic(session_id);
-                    // setInterval(() => fetchCurrentTactic(session_id), 15000);
-                }
-            })
-    }
-
-    // Always poll
-    setInterval(() => fetchCurrentTactic(session_id), 5000);
-
-    iniciarChat();
-
-    // fetchCurrentTactic(session_id);
-    // setInterval(() => fetchCurrentTactic(session_id), 15000);
 });

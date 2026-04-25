@@ -70,11 +70,25 @@ CREATE TABLE extra_notes (
 CREATE TABLE verified_answers (
     id SERIAL PRIMARY KEY,
     student_name VARCHAR(100) NOT NULL,
-    student_id VARCHAR(50) NOT NULL, 
+    student_id VARCHAR(50) NOT NULL,
     answers JSONB NOT NULL,
     score INTEGER NOT NULL DEFAULT 0,
     session_id INTEGER NOT NULL,
+    tactic_index INTEGER NOT NULL DEFAULT 0,
     CONSTRAINT fk_session_verified_answers
+        FOREIGN KEY (session_id) REFERENCES session (id) ON DELETE CASCADE,
+    UNIQUE(student_id, session_id, tactic_index)
+);
+
+-- Progresso individual por aluno
+CREATE TABLE student_session_progress (
+    session_id INTEGER NOT NULL,
+    student_id VARCHAR(50) NOT NULL,
+    current_tactic_index INTEGER DEFAULT 0,
+    tactic_started_at TIMESTAMP,
+    student_started BOOLEAN DEFAULT FALSE,
+    PRIMARY KEY (session_id, student_id),
+    CONSTRAINT fk_progress_session
         FOREIGN KEY (session_id) REFERENCES session (id) ON DELETE CASCADE
 );
 

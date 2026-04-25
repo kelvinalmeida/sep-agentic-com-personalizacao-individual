@@ -214,86 +214,63 @@
                     <button id="copyBtn" class="btn btn-sm btn-outline-primary" onclick="copyCode()">Copiar</button>
                 </p>
 
-                <!-- Botão e cronômetro centralizados -->
+                <!-- Controles da sessão -->
                 <div class="centered-controls">
 
-                    <button id="endSessionBtn" class="btn 
-                    {% if current_user.type != 'teacher'%}
-                        d-none
-                    {% endif %}
-                    btn-outline-danger btn-sm mb-4">Encerrar Sessão</button>
-
-                    <div class="d-block"></div>
-
-                    {% if current_user.type == 'teacher' %}
-                    <div class="ai-wrapper">
-                        <div class="ai-label">
-                            <div class="ai-icon-bg">
-                                <i class="bi bi-robot"></i>
-                            </div>
-                            <span>Agente Estrategista (IA)</span>
-                        </div>
-                        
-                        <div class="form-check form-switch m-0 p-0 d-flex align-items-center">
-                            <input class="form-check-input ai-switch ms-3" type="checkbox" id="agentToggle"
-                                {% if session.status == 'in-progress' %} disabled {% endif %}
-                                {% if session.use_agent %} checked {% endif %}>
-                        </div>
-                    </div>
-                    {% endif %}
-                    
-                    <div class="d-block"></div>
-
-                    <button id="startSessionBtn" class="btn 
-                    {% if current_user.type != 'teacher'%}
-                        d-none
-                    {% endif %}
-                    btn-success btn-lg px-5 py-3 shadow mb-4 fw-bold text-uppercase rounded-pill">
-                        <i class="bi bi-play-circle-fill me-2"></i> Iniciar Sessão
+                {% if current_user.type == 'teacher' %}
+                <!-- ===== VISÃO DO PROFESSOR ===== -->
+                <div class="d-flex gap-3 justify-content-center flex-wrap mb-4">
+                    <button id="startSessionBtn" class="btn btn-success btn-lg px-5 py-3 shadow fw-bold text-uppercase rounded-pill
+                        {% if session.status == 'in-progress' or session.status == 'finished' %} d-none {% endif %}">
+                        <i class="bi bi-play-circle-fill me-2"></i> Abrir Sessão para Alunos
                     </button>
+                    <button id="endSessionBtn" class="btn btn-outline-danger btn-lg px-4 py-3">Encerrar Sessão</button>
+                </div>
 
-                    <div>
-                        <h5 id="tacticName" class="text-primary fw-bold mt-2 display-6">Aguardando início...</h5>
+                <!-- Chat — Debate Síncrono (sempre visível se existir na estratégia) -->
+                <div id="teacher-debate-section" class="mt-4 mb-4 d-none">
+                    <h5 class="text-primary fw-bold"><i class="bi bi-chat-dots-fill me-2"></i>Chat — Debate Síncrono</h5>
+                    <div id="teacher_debate_chat"></div>
+                </div>
 
-                        <div class="d-flex justify-content-center align-items-center gap-3 my-4">
-                             <button id="prevTacticBtn" class="btn btn-outline-secondary rounded-circle p-3
-                             {% if current_user.type != 'teacher'%} d-none {% endif %}" title="Anterior">
-                                <i class="bi bi-arrow-left fs-4"></i>
-                             </button>
-
-                             <div id="tacticTimer" class="badge bg-dark rounded shadow border border-secondary" style="min-width: 180px;">--</div>
-
-                             <button id="nextTacticBtn" class="btn btn-primary rounded-circle p-3 shadow-lg
-                             {% if current_user.type != 'teacher'%} d-none {% endif %}" title="Próximo (IA decide se ativo)">
-                                <i class="bi bi-arrow-right fs-4"></i>
-                             </button>
-                        </div>
-
-                        <div id="agentThinking" class="d-none">
-                            <div class="agent-thinking-container">
-                                <i class="bi bi-cpu-fill pulsing-brain"></i>
-                                <div>
-                                    <h6 class="mb-0 fw-bold text-primary">Processando Estratégia...</h6>
-                                    <small class="text-muted">Analisando desempenho da turma e perfil de aprendizado.</small>
-                                </div>
-                                <div class="spinner-border text-primary ms-auto" role="status" style="width: 1.5rem; height: 1.5rem;"></div>
-                            </div>
-                        </div>
-
-                        <div id="agentReasoningContainer">
-                            </div>
-
-                        <div id="current_tatic_description" class="alert alert-light border shadow-sm text-muted fst-italic mt-3" role="alert">
-                            </div>
-                        
-                        <div id="tatic_here" class="mt-4"></div>
-
-                        {% if session.domains %}
-                        <div id="pdf_data" data-pdfs='{{ session.domains[0].pdfs | tojson | safe }}'></div>
-                        {% else %}
-                        <p class="text-muted small mt-3">Nenhum domínio associado a essa sessão.</p>
-                        {% endif %}
+                <!-- Envio de Informação (sempre visível se existir na estratégia) -->
+                <div id="teacher-envio-section" class="mt-4 mb-4 d-none">
+                    <h5 class="text-info fw-bold"><i class="bi bi-envelope-fill me-2"></i>Envio de Informação</h5>
+                    <div class="alert alert-info">
+                        Esta sessão inclui uma tática de <strong>Envio de Informação</strong>.
+                        Os alunos que chegarem a esta etapa receberão os materiais por e-mail automaticamente.
                     </div>
+                </div>
+
+                {% else %}
+                <!-- ===== VISÃO DO ALUNO ===== -->
+                <div id="student-start-area" class="text-center py-4">
+                    <button id="studentStartBtn" class="btn btn-success btn-lg px-5 py-3 shadow fw-bold text-uppercase rounded-pill"
+                        {% if session.status != 'in-progress' %} disabled {% endif %}>
+                        {% if session.status == 'in-progress' %}
+                            <i class="bi bi-play-circle-fill me-2"></i> Iniciar Minha Sessão
+                        {% else %}
+                            <i class="bi bi-hourglass me-2"></i> Aguardando professor abrir a sessão…
+                        {% endif %}
+                    </button>
+                    <p class="text-muted mt-3" id="student-start-msg">Clique para iniciar o seu percurso de aprendizagem.</p>
+                </div>
+
+                <div id="student-tactic-area" style="display:none">
+                    <h5 id="tacticName" class="text-primary fw-bold mt-2 display-6">Aguardando início...</h5>
+                    <div class="d-flex justify-content-center align-items-center gap-3 my-4">
+                        <div id="tacticTimer" class="badge bg-dark rounded shadow border border-secondary" style="min-width: 180px;">--</div>
+                    </div>
+                    <div id="current_tatic_description" class="alert alert-light border shadow-sm text-muted fst-italic mt-3" role="alert"></div>
+                    <div id="tatic_here" class="mt-4"></div>
+                    {% if session.domains %}
+                    <div id="pdf_data" data-pdfs='{{ session.domains[0].pdfs | tojson | safe }}'></div>
+                    {% else %}
+                    <p class="text-muted small mt-3">Nenhum domínio associado a essa sessão.</p>
+                    {% endif %}
+                </div>
+                {% endif %}
+
                 </div>
 
                 <hr>
@@ -541,9 +518,22 @@
         let session_json = {{ session | tojson }};
         let current_user_json = {{ current_user | tojson }};
         window.current_strategy_id = "{{ session.strategies[0].id if session.strategies else '' }}";
-        window.domain_id = session_json.domains[0].id;
+        window.domain_id = (session_json.domains && session_json.domains.length > 0) ? session_json.domains[0].id : null;
         window.my_username = current_user_json.username;
         window.my_id = current_user_json.id;
+        window.user_type = current_user_json.type;
+        window.teacher_debate_chat_id = null;
+        window.teacher_has_envio = false;
+        {% if session.strategies and session.strategies[0].tatics %}
+        {% for tatic in session.strategies[0].tatics %}
+        {% if 'debate sincrono' in tatic.name|lower %}
+        window.teacher_debate_chat_id = {{ tatic.chat_id if tatic.chat_id is not none else 'null' }};
+        {% endif %}
+        {% if 'envio de informa' in tatic.name|lower %}
+        window.teacher_has_envio = true;
+        {% endif %}
+        {% endfor %}
+        {% endif %}
         console.log("current_user:", current_user_json);
         // console.log(typeof session_json); // Agora será 'object'
         // console.log()
