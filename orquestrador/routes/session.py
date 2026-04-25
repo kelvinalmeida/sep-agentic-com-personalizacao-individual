@@ -407,8 +407,18 @@ def get_current_tactic(session_id):
     if session_json['status'] != 'in-progress':
         return jsonify({'message': 'Session not started or finished', 'session_status': session_json['status']}), 200
 
-    # Get Current Tactic Index from Session
+    student_id = request.args.get("student_id")
+    student_state = None
+    started_at_str = session_json.get("current_tactic_started_at")
+
+    # Get Current Tactic Index from Session/Student
     current_tactic_index = session_json.get("current_tactic_index", 0)
+    if student_id:
+        state_res = requests.get(f"{CONTROL_URL}/sessions/{session_id}/students/{student_id}/current_tactic")
+        if state_res.status_code == 200:
+            student_state = state_res.json()
+            current_tactic_index = student_state.get("current_tactic_index", current_tactic_index)
+            started_at_str = student_state.get("current_tactic_started_at") or started_at_str
 
     # Fetch all tactics
     tactics = []
@@ -422,6 +432,14 @@ def get_current_tactic(session_id):
 
     # Check bounds
     if current_tactic_index >= len(tactics):
+        if student_id:
+            return jsonify({
+                'message': 'No more tactics for this student',
+                'session_status': session_json['status'],
+                'student_id': student_id,
+                'student_state': student_state
+            })
+
         # Se ultrapassou o número de táticas, pode considerar finalizada ou apenas esperar
         # Se a intenção é finalizar automaticamente quando acaba:
         # requests.post(f"{CONTROL_URL}/sessions/end/{session_id}")
@@ -444,9 +462,6 @@ def get_current_tactic(session_id):
 
     remaining = 0
     elapsed_time = 0
-    
-    # Fallback to current time if not set (should not happen with new logic)
-    started_at_str = session_json.get("current_tactic_started_at")
 
     if started_at_str:
         try:
@@ -496,7 +511,9 @@ def get_current_tactic(session_id):
         'strategy_tactics': tactics,
         'session_status': session_json['status'],
         'current_tactic_index': current_tactic_index,
-        'strategy_id': current_strategy_id
+        'strategy_id': current_strategy_id,
+        'student_id': student_id,
+        'student_state': student_state
     })
 
 

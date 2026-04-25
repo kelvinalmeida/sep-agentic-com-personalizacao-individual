@@ -117,6 +117,143 @@ def ensure_executed_indices_column(conn):
             conn.rollback()
             logging.warning(f"Note on ensure_executed_indices_column: {e}")
 
+def ensure_session_student_state_table(conn):
+    with conn.cursor() as cur:
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS session_student_state (
+                session_id INTEGER NOT NULL,
+                student_id VARCHAR(50) NOT NULL,
+                current_tactic_index INTEGER NOT NULL DEFAULT 0,
+                executed_indices TEXT NOT NULL DEFAULT '[]',
+                current_tactic_started_at TIMESTAMP,
+                last_rating INTEGER,
+                updated_at TIMESTAMP NOT NULL DEFAULT NOW(),
+                PRIMARY KEY (session_id, student_id),
+                CONSTRAINT fk_student_state_session
+                    FOREIGN KEY (session_id) REFERENCES session(id) ON DELETE CASCADE
+            );
+        """)
+        try:
+            cur.execute("""
+                ALTER TABLE session_student_state
+                ADD COLUMN IF NOT EXISTS current_tactic_started_at TIMESTAMP
+            """)
+        except Exception as e:
+            conn.rollback()
+            logging.warning(f"Note on ensure_session_student_state_table ALTER: {e}")
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS session_student_state (
+                    session_id INTEGER NOT NULL,
+                    student_id VARCHAR(50) NOT NULL,
+                    current_tactic_index INTEGER NOT NULL DEFAULT 0,
+                    executed_indices TEXT NOT NULL DEFAULT '[]',
+                    current_tactic_started_at TIMESTAMP,
+                    last_rating INTEGER,
+                    updated_at TIMESTAMP NOT NULL DEFAULT NOW(),
+                    PRIMARY KEY (session_id, student_id),
+                    CONSTRAINT fk_student_state_session
+                        FOREIGN KEY (session_id) REFERENCES session(id) ON DELETE CASCADE
+                );
+            """)
+        conn.commit()
+
+def _load_indices(raw_value):
+    if isinstance(raw_value, list):
+        return raw_value
+    if raw_value is None:
+        return []
+    try:
+        parsed = json.loads(raw_value)
+        return parsed if isinstance(parsed, list) else []
+    except Exception:
+        return []
+
+def _ensure_student_is_in_session(conn, session_id, student_id):
+    with conn.cursor() as cur:
+        cur.execute("SELECT 1 FROM session WHERE id = %s", (session_id,))
+        if not cur.fetchone():
+            return False, jsonify({"error": "Session not found"}), 404
+
+        cur.execute(
+            "SELECT 1 FROM session_students WHERE session_id = %s AND student_id = %s",
+            (session_id, str(student_id))
+        )
+        if not cur.fetchone():
+            return False, jsonify({"error": "Student is not enrolled in this session"}), 404
+
+    return True, None, None
+
+def _get_or_create_student_state(conn, session_id, student_id):
+    ensure_executed_indices_column(conn)
+    with conn.cursor() as cur:
+        cur.execute("""
+            SELECT session_id, student_id, current_tactic_index, executed_indices,
+                   current_tactic_started_at, last_rating, updated_at
+            FROM session_student_state
+            WHERE session_id = %s AND student_id = %s
+        """, (session_id, str(student_id)))
+        state = cur.fetchone()
+
+        if state:
+            return state
+
+        cur.execute("""
+            SELECT current_tactic_index, executed_indices, current_tactic_started_at
+            FROM session
+            WHERE id = %s
+        """, (session_id,))
+        session_row = cur.fetchone() or {}
+        base_index = session_row.get('current_tactic_index', 0) if isinstance(session_row, dict) else 0
+        base_history = session_row.get('executed_indices', '[]') if isinstance(session_row, dict) else '[]'
+        base_started_at = (
+            session_row.get('current_tactic_started_at')
+            if isinstance(session_row, dict) else None
+        )
+
+        cur.execute("""
+            INSERT INTO session_student_state (
+                session_id, student_id, current_tactic_index, executed_indices,
+                current_tactic_started_at, last_rating, updated_at
+            )
+            VALUES (%s, %s, %s, %s, %s, NULL, %s)
+            RETURNING session_id, student_id, current_tactic_index, executed_indices,
+                      current_tactic_started_at, last_rating, updated_at
+        """, (
+            session_id,
+            str(student_id),
+            base_index,
+            base_history or '[]',
+            base_started_at,
+            datetime.utcnow()
+        ))
+        conn.commit()
+        return cur.fetchone()
+
+def _serialize_student_state(state):
+    return {
+        "session_id": state["session_id"],
+        "student_id": str(state["student_id"]),
+        "current_tactic_index": state.get("current_tactic_index", 0),
+        "executed_indices": _load_indices(state.get("executed_indices", "[]")),
+        "current_tactic_started_at": (
+            state["current_tactic_started_at"].isoformat()
+            if state.get("current_tactic_started_at") else None
+        ),
+        "last_rating": state.get("last_rating"),
+        "updated_at": state["updated_at"].isoformat() if state.get("updated_at") else None
+    }
+
+def _reset_student_states(conn, session_id, started_at):
+    with conn.cursor() as cur:
+        cur.execute("""
+            UPDATE session_student_state
+            SET current_tactic_index = 0,
+                executed_indices = '[]',
+                current_tactic_started_at = %s,
+                updated_at = %s
+            WHERE session_id = %s
+        """, (started_at, started_at, session_id))
+
 def update_executed_indices(conn, session_id):
     with conn.cursor() as cur:
         cur.execute("SELECT current_tactic_index, executed_indices FROM session WHERE id = %s", (session_id,))
@@ -176,6 +313,8 @@ def create_session():
         return jsonify({"error": "Strategies not provided"}), 400
 
     with get_db_connection() as conn:
+        ensure_executed_indices_column(conn)
+        ensure_session_student_state_table(conn)
         with conn.cursor() as cur:
             while True:
                 code = generate_unique_code()
@@ -199,6 +338,14 @@ def create_session():
             if students:
                 cur.executemany("INSERT INTO session_students (session_id, student_id) VALUES (%s, %s)",
                                 [(session_id, str(s)) for s in students])
+                cur.executemany("""
+                    INSERT INTO session_student_state (
+                        session_id, student_id, current_tactic_index, executed_indices,
+                        current_tactic_started_at, last_rating, updated_at
+                    )
+                    VALUES (%s, %s, 0, '[]', NULL, NULL, %s)
+                    ON CONFLICT (session_id, student_id) DO NOTHING
+                """, [(session_id, str(s), datetime.utcnow()) for s in students])
             if domains:
                 cur.executemany("INSERT INTO session_domains (session_id, domain_id) VALUES (%s, %s)",
                                 [(session_id, str(d)) for d in domains])
@@ -268,6 +415,7 @@ def start_session(session_id):
     with get_db_connection() as conn:
         ensure_end_flag_column(conn)
         ensure_executed_indices_column(conn)
+        ensure_session_student_state_table(conn)
         with conn.cursor() as cur:
             cur.execute("SELECT id FROM session WHERE id = %s", (session_id,))
             if not cur.fetchone():
@@ -281,6 +429,8 @@ def start_session(session_id):
                 RETURNING status, start_time
             """, (start_time, start_time, use_agent, session_id))
             updated = cur.fetchone()
+
+            _reset_student_states(conn, session_id, start_time)
             conn.commit()
 
     return jsonify({
@@ -312,6 +462,7 @@ def temp_switch_strategy(session_id):
     with get_db_connection() as conn:
         ensure_end_flag_column(conn)
         ensure_executed_indices_column(conn)
+        ensure_session_student_state_table(conn)
         with conn.cursor() as cur:
             cur.execute("SELECT id, original_strategy_id FROM session WHERE id = %s", (session_id,))
             session = cur.fetchone()
@@ -337,6 +488,7 @@ def temp_switch_strategy(session_id):
                     executed_indices = '[]'
                 WHERE id = %s
             """, (start_time, session_id))
+            _reset_student_states(conn, session_id, start_time)
 
             conn.commit()
 
@@ -433,6 +585,157 @@ def prev_tactic(session_id):
     return jsonify({"success": True, "current_tactic_index": new_index})
 
 
+@session_bp.route('/sessions/<int:session_id>/students/<string:student_id>/current_tactic', methods=['GET'])
+def get_student_current_tactic(session_id, student_id):
+    with get_db_connection() as conn:
+        ensure_session_student_state_table(conn)
+        ok, err_body, err_code = _ensure_student_is_in_session(conn, session_id, student_id)
+        if not ok:
+            return err_body, err_code
+
+        state = _get_or_create_student_state(conn, session_id, student_id)
+        return jsonify(_serialize_student_state(state)), 200
+
+
+@session_bp.route('/sessions/<int:session_id>/students/<string:student_id>/next_tactic', methods=['POST'])
+def next_tactic_for_student(session_id, student_id):
+    with get_db_connection() as conn:
+        ensure_session_student_state_table(conn)
+        ok, err_body, err_code = _ensure_student_is_in_session(conn, session_id, student_id)
+        if not ok:
+            return err_body, err_code
+
+        state = _get_or_create_student_state(conn, session_id, student_id)
+        current_index = state.get('current_tactic_index', 0)
+        history = _load_indices(state.get('executed_indices'))
+        if not history or history[-1] != current_index:
+            history.append(current_index)
+        new_index = current_index + 1
+        now = datetime.utcnow()
+
+        with conn.cursor() as cur:
+            cur.execute("""
+                UPDATE session_student_state
+                SET current_tactic_index = %s,
+                    executed_indices = %s,
+                    current_tactic_started_at = %s,
+                    updated_at = %s
+                WHERE session_id = %s AND student_id = %s
+                RETURNING session_id, student_id, current_tactic_index, executed_indices,
+                          current_tactic_started_at, last_rating, updated_at
+            """, (
+                new_index,
+                json.dumps(history),
+                now,
+                now,
+                session_id,
+                str(student_id)
+            ))
+            updated = cur.fetchone()
+            conn.commit()
+
+        return jsonify(_serialize_student_state(updated)), 200
+
+
+@session_bp.route('/sessions/<int:session_id>/students/<string:student_id>/set_tactic', methods=['POST'])
+def set_tactic_for_student(session_id, student_id):
+    data = request.get_json() or {}
+    new_index = data.get('tactic_index')
+    last_rating = data.get('last_rating')
+
+    if new_index is None:
+        return jsonify({"error": "tactic_index is required"}), 400
+
+    with get_db_connection() as conn:
+        ensure_session_student_state_table(conn)
+        ok, err_body, err_code = _ensure_student_is_in_session(conn, session_id, student_id)
+        if not ok:
+            return err_body, err_code
+
+        state = _get_or_create_student_state(conn, session_id, student_id)
+        current_index = state.get('current_tactic_index', 0)
+        history = _load_indices(state.get('executed_indices'))
+        if not history or history[-1] != current_index:
+            history.append(current_index)
+
+        if last_rating is not None:
+            try:
+                last_rating = int(last_rating)
+            except Exception:
+                return jsonify({"error": "last_rating must be an integer"}), 400
+        now = datetime.utcnow()
+
+        with conn.cursor() as cur:
+            cur.execute("""
+                UPDATE session_student_state
+                SET current_tactic_index = %s,
+                    executed_indices = %s,
+                    current_tactic_started_at = %s,
+                    last_rating = COALESCE(%s, last_rating),
+                    updated_at = %s
+                WHERE session_id = %s AND student_id = %s
+                RETURNING session_id, student_id, current_tactic_index, executed_indices,
+                          current_tactic_started_at, last_rating, updated_at
+            """, (
+                int(new_index),
+                json.dumps(history),
+                now,
+                last_rating,
+                now,
+                session_id,
+                str(student_id)
+            ))
+            updated = cur.fetchone()
+            conn.commit()
+
+        return jsonify(_serialize_student_state(updated)), 200
+
+
+@session_bp.route('/sessions/<int:session_id>/students/<string:student_id>/recommendation', methods=['GET'])
+def get_student_tactic_recommendation(session_id, student_id):
+    with get_db_connection() as conn:
+        ensure_session_student_state_table(conn)
+        ok, err_body, err_code = _ensure_student_is_in_session(conn, session_id, student_id)
+        if not ok:
+            return err_body, err_code
+
+        state = _get_or_create_student_state(conn, session_id, student_id)
+        current_index = state.get('current_tactic_index', 0)
+        last_rating = state.get('last_rating')
+
+        if last_rating is None:
+            recommendation = {
+                "action": "keep",
+                "recommended_tactic_index": current_index,
+                "reason": "Sem avaliação recente para personalizar a progressão."
+            }
+        elif last_rating <= 2:
+            recommendation = {
+                "action": "review",
+                "recommended_tactic_index": max(0, current_index - 1),
+                "reason": "Avaliação baixa; recomendado reforçar com revisão."
+            }
+        elif last_rating >= 4:
+            recommendation = {
+                "action": "advance",
+                "recommended_tactic_index": current_index + 1,
+                "reason": "Avaliação alta; recomendado avançar para próxima tática."
+            }
+        else:
+            recommendation = {
+                "action": "keep",
+                "recommended_tactic_index": current_index,
+                "reason": "Avaliação mediana; manter tática atual."
+            }
+
+        return jsonify({
+            "session_id": session_id,
+            "student_id": str(student_id),
+            "state": _serialize_student_state(state),
+            "recommendation": recommendation
+        }), 200
+
+
 @session_bp.route('/sessions/submit_answer', methods=['POST'])
 def submit_answer():
     data = request.get_json()
@@ -521,20 +824,44 @@ def enter_session():
     user_type = data.get('type') # 'type' is a built-in function name
 
     with get_db_connection() as conn:
+        ensure_executed_indices_column(conn)
+        ensure_session_student_state_table(conn)
         with conn.cursor() as cur:
-            cur.execute("SELECT id FROM session WHERE code = %s", (session_code,))
+            cur.execute("""
+                SELECT id, current_tactic_index, executed_indices, current_tactic_started_at
+                FROM session
+                WHERE code = %s
+            """, (session_code,))
             session = cur.fetchone()
 
             if not session:
                 return jsonify({"error": "Session not found"}), 404
 
             session_id = session['id']
+            session_current_index = session.get('current_tactic_index', 0)
+            session_executed_indices = session.get('executed_indices', '[]')
+            session_started_at = session.get('current_tactic_started_at')
 
             # Check if already enrolled to avoid duplicates or error
             if user_type == 'student':
                 cur.execute("SELECT 1 FROM session_students WHERE session_id = %s AND student_id = %s", (session_id, requester_id))
                 if not cur.fetchone():
                     cur.execute("INSERT INTO session_students (session_id, student_id) VALUES (%s, %s)", (session_id, requester_id))
+                    cur.execute("""
+                        INSERT INTO session_student_state (
+                            session_id, student_id, current_tactic_index, executed_indices,
+                            current_tactic_started_at, last_rating, updated_at
+                        )
+                        VALUES (%s, %s, %s, %s, %s, NULL, %s)
+                        ON CONFLICT (session_id, student_id) DO NOTHING
+                    """, (
+                        session_id,
+                        requester_id,
+                        session_current_index,
+                        session_executed_indices or '[]',
+                        session_started_at,
+                        datetime.utcnow()
+                    ))
                     conn.commit()
             else:
                 cur.execute("SELECT 1 FROM session_teachers WHERE session_id = %s AND teacher_id = %s", (session_id, requester_id))
@@ -555,6 +882,7 @@ def change_session_strategy(session_id):
     with get_db_connection() as conn:
         ensure_end_flag_column(conn)
         ensure_executed_indices_column(conn)
+        ensure_session_student_state_table(conn)
         with conn.cursor() as cur:
             cur.execute("SELECT id FROM session WHERE id = %s", (session_id,))
             if not cur.fetchone():
@@ -576,6 +904,7 @@ def change_session_strategy(session_id):
                     executed_indices = '[]'
                 WHERE id = %s
             """, (start_time, start_time, session_id))
+            _reset_student_states(conn, session_id, start_time)
 
             conn.commit()
 
@@ -593,6 +922,7 @@ def change_session_domain(session_id):
     with get_db_connection() as conn:
         ensure_end_flag_column(conn)
         ensure_executed_indices_column(conn)
+        ensure_session_student_state_table(conn)
         with conn.cursor() as cur:
             cur.execute("SELECT id FROM session WHERE id = %s", (session_id,))
             if not cur.fetchone():
@@ -614,6 +944,7 @@ def change_session_domain(session_id):
                     executed_indices = '[]'
                 WHERE id = %s
             """, (start_time, start_time, session_id))
+            _reset_student_states(conn, session_id, start_time)
 
             conn.commit()
 
@@ -634,10 +965,19 @@ def rate_session(session_id):
 
     with get_db_connection() as conn:
         ensure_rating_tables(conn)
+        ensure_session_student_state_table(conn)
         with conn.cursor() as cur:
             cur.execute("SELECT id FROM session WHERE id = %s", (session_id,))
             if not cur.fetchone():
                 return jsonify({"error": "Session not found"}), 404
+
+        ok, err_body, err_code = _ensure_student_is_in_session(conn, session_id, student_id)
+        if not ok:
+            return err_body, err_code
+
+        _get_or_create_student_state(conn, session_id, student_id)
+
+        with conn.cursor() as cur:
 
             # Upsert Rating
             cur.execute("""
@@ -663,6 +1003,11 @@ def rate_session(session_id):
                 SET rating_average = %s, rating_count = %s
                 WHERE id = %s
             """, (new_avg, new_count, session_id))
+            cur.execute("""
+                UPDATE session_student_state
+                SET last_rating = %s, updated_at = %s
+                WHERE session_id = %s AND student_id = %s
+            """, (rating, datetime.utcnow(), session_id, student_id))
 
             conn.commit()
 

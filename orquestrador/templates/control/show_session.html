@@ -540,6 +540,7 @@
         window.token = "{{ token }}";
         let session_json = {{ session | tojson }};
         let current_user_json = {{ current_user | tojson }};
+        window.current_user_json = current_user_json;
         window.current_strategy_id = "{{ session.strategies[0].id if session.strategies else '' }}";
         window.domain_id = session_json.domains[0].id;
         window.my_username = current_user_json.username;

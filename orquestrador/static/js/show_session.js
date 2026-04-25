@@ -1,6 +1,7 @@
 document.addEventListener("DOMContentLoaded", () => {
     let countdownInterval = null;
     let taticaAtiva = false;
+    let isAdvancingTactic = false;
 
     let debateSicrono_isActive = false;
     let apresentacaoSicrona_isActive = false;
@@ -135,29 +136,7 @@ document.addEventListener("DOMContentLoaded", () => {
                 // Verifica se o botão existe e não está oculto (é professor)
                 if (nextBtn && !nextBtn.classList.contains("d-none")) {
                     console.log("Tempo esgotado. Avançando para a próxima tática/estratégia...");
-                    
-                    const agentToggle = document.getElementById("agentToggle");
-                    if (agentToggle && agentToggle.checked) {
-                        showThinking();
-                    }
-
-                    // Chama a rota de avançar
-                    fetch(`/sessions/${session_id}/next_tactic`, { method: 'POST' })
-                    .then(response => {
-                        hideThinking();
-                        if(response.ok) {
-                            response.json().then(data => {
-                                if (data.agent_decision) {
-                                    showReasoning(data.agent_decision);
-                                    sessionStorage.setItem("latestReasoning_" + session_id, JSON.stringify(data.agent_decision));
-                                }
-                                fetchCurrentTactic(session_id);
-                            });
-                        }
-                    })
-                    .catch(err => {
-                        hideThinking();
-                    });
+                    requestNextTactic();
                 } else {
                     // Se for aluno, apenas atualiza para ver se o professor mudou
                     fetchCurrentTactic(session_id); 
@@ -676,8 +655,11 @@ document.addEventListener("DOMContentLoaded", () => {
 
     function fetchCurrentTactic(session_id) {
         // console.log(session_status);
+        const query = (window.current_user_json && window.current_user_json.type === 'student' && window.my_id)
+            ? `?student_id=${encodeURIComponent(window.my_id)}`
+            : "";
 
-        fetch(`/sessions/${session_id}/current_tactic`)
+        fetch(`/sessions/${session_id}/current_tactic${query}`)
             .then(response => {
                 return response.json();
             })
@@ -707,6 +689,50 @@ document.addEventListener("DOMContentLoaded", () => {
                 console.error("Erro ao buscar tática atual:", error.message);
                 document.getElementById("tacticName").innerText = "Erro ao carregar";
                 document.getElementById("tacticTimer").innerText = "--";
+            });
+    }
+
+    function requestNextTactic() {
+        if (isAdvancingTactic) {
+            return;
+        }
+
+        isAdvancingTactic = true;
+
+        const agentToggle = document.getElementById("agentToggle");
+        if (agentToggle && agentToggle.checked) {
+            showThinking();
+        }
+
+        fetch(`/sessions/${session_id}/next_tactic`, { method: 'POST' })
+            .then(async response => {
+                let data = null;
+                try {
+                    data = await response.json();
+                } catch (err) {
+                    data = null;
+                }
+
+                hideThinking();
+
+                if (!response.ok) {
+                    throw new Error((data && data.error) || "Erro ao avançar tática");
+                }
+
+                if (data && data.agent_decision) {
+                    showReasoning(data.agent_decision);
+                    sessionStorage.setItem("latestReasoning_" + session_id, JSON.stringify(data.agent_decision));
+                }
+
+                fetchCurrentTactic(session_id);
+                return data;
+            })
+            .catch(err => {
+                hideThinking();
+                console.error(err);
+            })
+            .finally(() => {
+                isAdvancingTactic = false;
             });
     }
 
@@ -824,33 +850,7 @@ document.addEventListener("DOMContentLoaded", () => {
     const nextBtn = document.getElementById("nextTacticBtn");
     if(nextBtn){
         nextBtn.addEventListener("click", () => {
-             // Mostra spinner se o agente estiver ativo (checamos a toggle se possível, ou sempre mostramos e escondemos rápido se não for)
-             // A toggle pode estar desabilitada mas checked.
-             const agentToggle = document.getElementById("agentToggle");
-
-             if (agentToggle && agentToggle.checked) {
-                 showThinking();
-             }
-
-             fetch(`/sessions/${session_id}/next_tactic`, { method: 'POST' })
-             .then(response => {
-                 hideThinking();
-                 if(response.ok) {
-                    response.json().then(data => {
-                        if (data.agent_decision) {
-                            showReasoning(data.agent_decision);
-                            sessionStorage.setItem("latestReasoning_" + session_id, JSON.stringify(data.agent_decision));
-                        }
-                        fetchCurrentTactic(session_id);
-                    });
-                 } else {
-                     console.error("Erro ao avançar tática");
-                 }
-             })
-             .catch(err => {
-                 hideThinking();
-                 console.error(err);
-             });
+             requestNextTactic();
         });
     }
 

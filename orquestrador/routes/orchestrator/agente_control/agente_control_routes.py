@@ -1,10 +1,222 @@
+import os
 import requests
 import logging
-import re
+import unicodedata
+from datetime import datetime
+from collections import Counter
 from flask import Blueprint, jsonify, request
 from ...services_routs import CONTROL_URL, STRATEGIES_URL, USER_URL, DOMAIN_URL
 
 agente_control_orch_bp = Blueprint('agente_control_orch_bp', __name__)
+
+try:
+    TACTIC_DECISION_TTL_SECONDS = max(
+        0,
+        int(os.environ.get("TACTIC_DECISION_TTL_SECONDS", "45"))
+    )
+except Exception:
+    TACTIC_DECISION_TTL_SECONDS = 45
+
+
+def _safe_int(value, default=None):
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _normalize_text(value):
+    return " ".join(str(value or "").split())
+
+
+def _normalize_label(value):
+    text = unicodedata.normalize("NFKD", str(value or ""))
+    text = "".join(ch for ch in text if not unicodedata.combining(ch))
+    return _normalize_text(text).lower()
+
+
+def _parse_datetime(value):
+    if isinstance(value, datetime):
+        return value
+    if not value:
+        return None
+
+    raw = str(value).strip()
+    try:
+        return datetime.fromisoformat(raw)
+    except ValueError:
+        pass
+
+    for fmt in (
+        "%a, %d %b %Y %H:%M:%S %Z",
+        "%Y-%m-%dT%H:%M:%S.%f",
+        "%Y-%m-%dT%H:%M:%S",
+        "%Y-%m-%d %H:%M:%S",
+    ):
+        try:
+            return datetime.strptime(raw, fmt)
+        except ValueError:
+            continue
+
+    return None
+
+
+def _get_tactic_kind(tactic):
+    normalized_name = _normalize_label(tactic.get("name", ""))
+    normalized_description = _normalize_label(tactic.get("description", ""))
+    text = f"{normalized_name} {normalized_description}".strip()
+
+    if "mudanca de estrategia" in normalized_name or "mudanca de estrategia" in text:
+        return "strategy_change"
+    if "reuso" in text:
+        return "reuse"
+    if "debate" in text or "sincrono" in text:
+        return "debate"
+    if "envio de informacao" in text:
+        return "information"
+    if "regra" in text:
+        return "rules"
+    return "other"
+
+
+def _find_review_tactic_index(current_index, tactics):
+    review_priority = {
+        "reuse": 0,
+        "information": 1,
+        "debate": 2,
+        "other": 3,
+    }
+    candidates = []
+    for idx, tactic in enumerate(tactics):
+        kind = _get_tactic_kind(tactic)
+        if kind == "strategy_change":
+            continue
+        distance = abs(idx - current_index)
+        candidates.append((distance, review_priority.get(kind, 4), idx, idx))
+
+    if not candidates:
+        return current_index
+
+    candidates.sort()
+    return candidates[0][3]
+
+
+def _find_advancement_tactic_index(current_index, executed_indices, tactics):
+    executed_set = {
+        idx for idx in executed_indices
+        if isinstance(idx, int) and 0 <= idx < len(tactics)
+    }
+
+    for idx in range(current_index + 1, len(tactics)):
+        if idx in executed_set:
+            continue
+        if _get_tactic_kind(tactics[idx]) == "strategy_change":
+            continue
+        return idx
+
+    for idx in range(current_index + 1, len(tactics)):
+        if _get_tactic_kind(tactics[idx]) != "strategy_change":
+            return idx
+
+    return current_index
+
+
+def _select_display_tactic_index(recommended_indices, fallback_index=0):
+    if not recommended_indices:
+        return fallback_index
+
+    distribution = Counter(recommended_indices)
+    return max(distribution.items(), key=lambda item: (item[1], item[0]))[0]
+
+
+def _build_rule_decision(student_state, tactics, difficulty_data=None):
+    if not tactics:
+        return None
+
+    current_index = _safe_int(student_state.get("current_tactic_index"), 0)
+    current_index = max(0, min(current_index, len(tactics) - 1))
+    executed_indices = student_state.get("executed_indices", [])
+    if not isinstance(executed_indices, list):
+        executed_indices = []
+
+    started_at = _parse_datetime(student_state.get("current_tactic_started_at"))
+    if started_at and TACTIC_DECISION_TTL_SECONDS > 0:
+        elapsed_seconds = (datetime.utcnow() - started_at).total_seconds()
+        if 0 <= elapsed_seconds < TACTIC_DECISION_TTL_SECONDS:
+            return {
+                "tactic_index": current_index,
+                "source": "ttl_keep",
+                "reason": (
+                    f"Aluno ainda está dentro da janela mínima de {TACTIC_DECISION_TTL_SECONDS}s "
+                    f"na tática atual; mantido sem nova consulta à IA."
+                ),
+                "force_apply": False,
+                "chosen_tactic_id": tactics[current_index].get("id")
+            }
+
+    last_rating = _safe_int(student_state.get("last_rating"))
+    if last_rating is not None:
+        if last_rating <= 2:
+            review_index = _find_review_tactic_index(current_index, tactics)
+            return {
+                "tactic_index": review_index,
+                "source": "rule_rating_review",
+                "reason": (
+                    "Avaliação recente baixa; o fluxo aplicou reforço local antes de consultar a IA."
+                ),
+                "force_apply": True,
+                "chosen_tactic_id": tactics[review_index].get("id")
+            }
+
+        if last_rating >= 4:
+            next_index = _find_advancement_tactic_index(current_index, executed_indices, tactics)
+            if next_index != current_index:
+                return {
+                    "tactic_index": next_index,
+                    "source": "rule_rating_advance",
+                    "reason": (
+                        "Avaliação recente alta; o fluxo avançou localmente para a próxima tática adequada."
+                    ),
+                    "force_apply": True,
+                    "chosen_tactic_id": tactics[next_index].get("id")
+                }
+
+    if not isinstance(difficulty_data, dict):
+        return None
+
+    total_questions = _safe_int(difficulty_data.get("total_questions"), 0) or 0
+    wrong_count = _safe_int(difficulty_data.get("wrong_count"), 0) or 0
+    correct_count = _safe_int(difficulty_data.get("correct_count"), 0) or 0
+
+    if total_questions <= 0:
+        return None
+
+    if wrong_count == 0 and correct_count > 0:
+        next_index = _find_advancement_tactic_index(current_index, executed_indices, tactics)
+        if next_index != current_index:
+            return {
+                "tactic_index": next_index,
+                "source": "rule_difficulty_advance",
+                "reason": (
+                    "Sem erros na sessão atual; o fluxo avançou localmente sem sobrecarregar a IA."
+                ),
+                "force_apply": True,
+                "chosen_tactic_id": tactics[next_index].get("id")
+            }
+
+    if wrong_count >= max(2, (total_questions + 1) // 2):
+        review_index = _find_review_tactic_index(current_index, tactics)
+        return {
+            "tactic_index": review_index,
+            "source": "rule_difficulty_review",
+            "reason": (
+                "Erros relevantes na sessão atual; o fluxo escolheu reforço local antes de consultar a IA."
+            ),
+            "force_apply": True,
+            "chosen_tactic_id": tactics[review_index].get("id")
+        }
+
+    return None
 
 
 def _build_exercise_context_for_session(session_id):
@@ -178,153 +390,287 @@ def execute_agent_logic(session_id, session_json):
     3. Aplica a decisão.
     """
     try:
-        # === FLUXO DE AGENTE DE IA ===
-        logging.info("🤖 Agente de Estratégia ATIVADO. Iniciando ciclo de decisão...")
+        logging.info("🤖 Agente de Estratégia por aluno ATIVADO. Iniciando ciclo de decisão individual...")
 
-        # 1. Dados da Sessão (Control)
         strategy_id = session_json.get('strategies', [None])[0]
-
-        # Inferir táticas executadas (usando histórico real do Control)
-        executed_ids = []
-        tactics = []
-        if strategy_id:
-            strat_res = requests.get(f"{STRATEGIES_URL}/strategies/{strategy_id}")
-            if strat_res.status_code == 200:
-                strat_data = strat_res.json()
-                tactics = strat_data.get('tatics', [])
-
-                # NOVO: Usar executed_indices do Control
-                executed_indices = session_json.get('executed_indices', [])
-                current_idx = session_json.get('current_tactic_index', 0)
-
-                # Mapeia índices para IDs
-                for idx in executed_indices:
-                    if 0 <= idx < len(tactics):
-                        executed_ids.append(tactics[idx]['id'])
-
-                # Adiciona a atual também, pois ela acabou de ser "feita" no momento da decisão
-                # Evita duplicidade se já estiver no histórico (embora Control adicione no next, aqui estamos decidindo O PRÓXIMO)
-                if 0 <= current_idx < len(tactics):
-                    current_id = tactics[current_idx]['id']
-                    if current_id not in executed_ids:
-                        executed_ids.append(current_id)
-
-                # --- NEW CHECK: Se todas as táticas foram executadas, encerra a sessão ---
-                # Apenas se a estratégia atual NÃO for vazia
-                if tactics:
-                    all_tactic_ids = {t['id'] for t in tactics}
-                    executed_ids_set = set(executed_ids)
-
-                    # Se já cobrimos todas as táticas da estratégia atual
-                    if all_tactic_ids.issubset(executed_ids_set):
-                        logging.info("🏁 Todas as táticas da estratégia atual foram executadas. Encerrando sessão.")
-
-                        # Chama endpoint de fim de sessão no Control
-                        end_res = requests.post(f"{CONTROL_URL}/sessions/end/{session_id}")
-
-                        if end_res.status_code == 200:
-                            return jsonify({
-                                "success": True,
-                                "session_status": "finished",
-                                "message": "All tactics executed."
-                            }), 200
-                        else:
-                            logging.error(f"Erro ao encerrar sessão: {end_res.text}")
-
-        performance_res = requests.get(f"{CONTROL_URL}/sessions/{session_id}/agent_summary")
-        performance_summary = performance_res.json().get('summary', 'Sem dados de performance.') if performance_res.status_code == 200 else 'Erro ao buscar performance.'
-
-        # 2. Dados do Aluno/Turma (User)
         student_ids = session_json.get('students', [])
-        student_profile_summary = "Sem alunos."
-        if student_ids:
-             user_res = requests.post(f"{USER_URL}/students/summarize_preferences", json={"student_ids": student_ids})
-             if user_res.status_code == 200:
-                 student_profile_summary = user_res.json().get('summary', 'Perfil não informado.')
+        if not strategy_id or not student_ids:
+            return None
 
-        # 3. Conteúdo do Domínio (Domain)
-        domain_id = session_json.get('domains', [None])[0]
-        domain_name = "Domínio Desconhecido"
-        domain_description = ""
+        strat_res = requests.get(f"{STRATEGIES_URL}/strategies/{strategy_id}")
+        if strat_res.status_code != 200:
+            logging.error("❌ Não foi possível carregar estratégia atual no Strategies.")
+            return None
 
-        if domain_id:
-             dom_res = requests.get(f"{DOMAIN_URL}/domains/{domain_id}")
-             if dom_res.status_code == 200:
-                 d_data = dom_res.json()
-                 domain_name = d_data.get('name', '')
-                 domain_description = d_data.get('description', '')
+        tactics = (strat_res.json() or {}).get('tatics', [])
+        if not tactics:
+            return None
 
-        content_res = requests.get(f"{DOMAIN_URL}/get_content/2") # MVP
-        article_text = content_res.json().get('content', '') if content_res.status_code == 200 else ''
+        tactic_idx_by_id = {int(t.get("id")): idx for idx, t in enumerate(tactics) if t.get("id") is not None}
+        individual_decisions = []
+        recommended_indices = []
+        decision_cache = {}
+        exercise_context_by_id = None
+        session_performance_summary = None
+        class_profile_summary = None
+        ai_calls_count = 0
+        ai_cache_hit_count = 0
+        local_rule_count = 0
+        ttl_rule_count = 0
+        difficulty_fetch_count = 0
 
-        # 4. Chamada ao Agente (Strategies)
-        agent_payload = {
-            "strategy_id": strategy_id,
-            "executed_tactics": executed_ids,
-            "student_profile_summary": student_profile_summary,
-            "performance_summary": performance_summary,
-            "domain_name": domain_name,
-            "domain_description": domain_description,
-            "article_text": article_text
-        }
+        def get_exercise_context_by_id():
+            nonlocal exercise_context_by_id
+            if exercise_context_by_id is None:
+                context, _ = _build_exercise_context_for_session(session_id)
+                exercise_context_by_id = context or {}
+            return exercise_context_by_id
 
-        logging.info(f"📤 Enviando payload para Agente: {agent_payload.keys()}")
-        agent_res = requests.post(f"{STRATEGIES_URL}/agent/decide_next_tactic", json=agent_payload)
+        def get_session_performance_summary():
+            nonlocal session_performance_summary
+            if session_performance_summary is None:
+                session_performance_summary = "Sem dados de performance da sessão."
+                perf_res = requests.get(f"{CONTROL_URL}/sessions/{session_id}/agent_summary", timeout=20)
+                if perf_res.status_code == 200:
+                    session_performance_summary = (
+                        (perf_res.json() or {}).get("summary", session_performance_summary)
+                    )
+            return session_performance_summary
 
-        if agent_res.status_code == 200:
-            decision = agent_res.json().get('decision', {})
-            chosen_tactic_id = decision.get('chosen_tactic_id')
+        def get_class_profile_summary():
+            nonlocal class_profile_summary
+            if class_profile_summary is None:
+                class_profile_summary = "Perfil da turma não disponível."
+                class_profile_res = requests.post(
+                    f"{USER_URL}/students/summarize_preferences",
+                    json={"student_ids": student_ids},
+                    timeout=25
+                )
+                if class_profile_res.status_code == 200:
+                    class_summary_raw = (
+                        (class_profile_res.json() or {}).get("summary", class_profile_summary)
+                    )
+                    class_profile_summary = (
+                        class_summary_raw
+                        if isinstance(class_summary_raw, str)
+                        else str(class_summary_raw)
+                    )
+            return class_profile_summary
 
-            logging.info(f"📥 Decisão do Agente: Tática ID {chosen_tactic_id}")
+        for student_id in student_ids:
+            student_state_res = requests.get(
+                f"{CONTROL_URL}/sessions/{session_id}/students/{student_id}/current_tactic",
+                timeout=15
+            )
+            if student_state_res.status_code != 200:
+                logging.warning(
+                    "Falha ao obter estado individual. session_id=%s student_id=%s status=%s",
+                    session_id, student_id, student_state_res.status_code
+                )
+                continue
 
-            # 5. Aplicar Decisão (Encontrar índice e setar)
-            if chosen_tactic_id and strategy_id:
-                 # Reusar tactics já buscadas acima
-                 target_index = -1
-                 for idx, t in enumerate(tactics):
-                     if t['id'] == chosen_tactic_id:
-                         target_index = idx
-                         break
+            student_state = student_state_res.json() or {}
+            current_index = _safe_int(student_state.get("current_tactic_index"), 0) or 0
+            current_index = max(0, min(current_index, len(tactics) - 1))
+            executed_indices = student_state.get("executed_indices", [])
+            if not isinstance(executed_indices, list):
+                executed_indices = []
+            executed_tactics = []
+            for idx in executed_indices:
+                if isinstance(idx, int) and 0 <= idx < len(tactics):
+                    tactic_id = tactics[idx].get("id")
+                    if tactic_id is not None:
+                        executed_tactics.append(int(tactic_id))
 
-                 if target_index != -1:
-                     # Seta o índice no Control
-                     requests.post(f"{CONTROL_URL}/sessions/tactic/set/{session_id}", json={'tactic_index': target_index})
-                     logging.info(f"✅ Índice da tática atualizado para {target_index}")
+            current_session_student_performance = "Sem desempenho individual na sessão atual."
+            difficulty_data = None
+            decision = _build_rule_decision(student_state, tactics)
+            if decision:
+                if decision["source"] == "ttl_keep":
+                    ttl_rule_count += 1
+                else:
+                    local_rule_count += 1
 
-                     # --- VERIFICAÇÃO DE MUDANÇA DE ESTRATÉGIA ---
-                     current_tactic = tactics[target_index]
-                     tactic_name = current_tactic.get('name', '').strip().lower()
-                     valid_names = ["mudanca de estrategia", "mudança de estratégia", "mudança de estrategia", "mudanca de estratégia"]
+            if decision is None:
+                difficulty_fetch_count += 1
+                difficulty_res = requests.post(
+                    f"{CONTROL_URL}/agent/student_session_difficulty_summary",
+                    json={
+                        "student_id": student_id,
+                        "session_id": session_id,
+                        "exercise_context_by_id": get_exercise_context_by_id()
+                    },
+                    timeout=40
+                )
+                if difficulty_res.status_code == 200:
+                    difficulty_data = difficulty_res.json() or {}
+                    current_session_student_performance = difficulty_data.get(
+                        "difficulty_summary",
+                        current_session_student_performance
+                    )
+                    decision = _build_rule_decision(student_state, tactics, difficulty_data=difficulty_data)
+                    if decision:
+                        local_rule_count += 1
+                elif difficulty_res.status_code not in (404, 422):
+                    logging.warning(
+                        "Falha ao obter resumo de dificuldade. session_id=%s student_id=%s status=%s",
+                        session_id, student_id, difficulty_res.status_code
+                    )
 
-                     if tactic_name in valid_names:
-                         description = str(current_tactic.get('description', ''))
-                         match = re.search(r'\d+', description)
+            if decision is None:
+                student_profile_res = requests.post(
+                    f"{USER_URL}/agent/summarize_logged_user",
+                    json={"user_id": student_id},
+                    timeout=20
+                )
+                student_profile_summary = "Perfil individual não disponível."
+                if student_profile_res.status_code == 200:
+                    student_profile_summary = (
+                        (student_profile_res.json() or {}).get("summary", student_profile_summary)
+                    )
 
-                         if match:
-                             target_strategy_id = int(match.group())
-                             logging.info(f"🔄 Agente escolheu MUDANÇA DE ESTRATÉGIA para ID: {target_strategy_id}")
+                history_res = requests.get(
+                    f"{CONTROL_URL}/students/{student_id}/grades_history",
+                    timeout=20
+                )
+                student_history_summary = "Histórico do aluno não disponível."
+                if history_res.status_code == 200:
+                    student_history_summary = (history_res.json() or {}).get(
+                        "student_performance_summary",
+                        student_history_summary
+                    )
 
-                             # Aciona a troca temporária
-                             switch_res = requests.post(
-                                 f"{CONTROL_URL}/sessions/{session_id}/temp_switch_strategy",
-                                 json={'strategy_id': target_strategy_id}
-                             )
+                cache_key = (
+                    _normalize_text(student_profile_summary),
+                    _normalize_text(student_history_summary),
+                    _normalize_text(current_session_student_performance),
+                    str(student_state.get("last_rating"))
+                )
 
-                             if switch_res.status_code != 200:
-                                 logging.error(f"❌ Falha ao trocar estratégia (Agente): {switch_res.text}")
-                             else:
-                                 logging.info("✅ Estratégia trocada com sucesso pelo Agente.")
-                         else:
-                             logging.warning(f"⚠️ Tática de mudança escolhida, mas sem ID na descrição: {description}")
+                cached_decision = decision_cache.get(cache_key)
+                decision_source = "ai_cache"
+                if cached_decision is None:
+                    ai_payload = {
+                        "student_id": str(student_id),
+                        "strategy_id": strategy_id,
+                        "executed_tactics": executed_tactics,
+                        "student_profile_summary": student_profile_summary,
+                        "performance_summary": get_session_performance_summary(),
+                        "class_profile_summary": get_class_profile_summary(),
+                        "student_history_summary": student_history_summary,
+                        "current_session_student_performance": current_session_student_performance,
+                        "last_session_rating": student_state.get("last_rating"),
+                        "personalization_rules": [
+                            "Considere perfil individual, perfil da turma, histórico do aluno e desempenho atual da sessão.",
+                            "Evite repetir táticas já executadas, exceto quando o reforço for necessário.",
+                            "Se houver tática de mudança de estratégia, só use quando houver justificativa forte."
+                        ]
+                    }
 
-                     return jsonify({"success": True, "agent_decision": decision}), 200
-                 else:
-                     logging.error("❌ Tática escolhida pelo agente não encontrada na estratégia atual.")
+                    ai_res = requests.post(
+                        f"{STRATEGIES_URL}/agent/decide_next_tactic",
+                        json=ai_payload,
+                        timeout=45
+                    )
+                    if ai_res.status_code != 200:
+                        logging.warning(
+                            "Falha ao obter decisão da IA no Strategies. session_id=%s student_id=%s status=%s",
+                            session_id, student_id, ai_res.status_code
+                        )
+                        continue
+
+                    cached_decision = (ai_res.json() or {}).get("decision", {})
+                    decision_cache[cache_key] = cached_decision
+                    decision_source = "ai"
+                    ai_calls_count += 1
+                else:
+                    ai_cache_hit_count += 1
+
+                chosen_tactic_id = cached_decision.get("chosen_tactic_id")
+                idx = None
+                if chosen_tactic_id is not None:
+                    try:
+                        idx = tactic_idx_by_id.get(int(chosen_tactic_id))
+                    except (TypeError, ValueError):
+                        idx = None
+                if idx is None:
+                    idx = current_index
+
+                decision = {
+                    "tactic_index": idx,
+                    "source": decision_source,
+                    "reason": cached_decision.get("reasoning", ""),
+                    "force_apply": False,
+                    "chosen_tactic_id": chosen_tactic_id
+                }
+
+            chosen_tactic_id = decision.get("chosen_tactic_id")
+            idx = _safe_int(decision.get("tactic_index"), current_index)
+            idx = max(0, min(idx, len(tactics) - 1))
+            recommended_indices.append(idx)
+
+            should_apply = bool(decision.get("force_apply")) or idx != current_index
+            applied = True
+            if should_apply:
+                set_res = requests.post(
+                    f"{CONTROL_URL}/sessions/{session_id}/students/{student_id}/set_tactic",
+                    json={"tactic_index": idx},
+                    timeout=15
+                )
+                applied = set_res.status_code == 200
+                if not applied:
+                    logging.warning(
+                        "Falha ao aplicar tática individual. session_id=%s student_id=%s tactic_index=%s status=%s",
+                        session_id, student_id, idx, set_res.status_code
+                    )
+
+            individual_decisions.append({
+                "student_id": str(student_id),
+                "recommended_tactic_index": idx,
+                "chosen_tactic_id": chosen_tactic_id,
+                "decision_source": decision.get("source"),
+                "applied": applied,
+                "state_changed": should_apply,
+                "reason": decision.get("reason", "")
+            })
+
+        if not individual_decisions:
+            return None
+
+        distribution = dict(Counter(recommended_indices))
+        display_tactic_index = _select_display_tactic_index(
+            recommended_indices,
+            fallback_index=_safe_int(session_json.get("current_tactic_index"), 0) or 0
+        )
+        display_sync_applied = False
+
+        display_set_res = requests.post(
+            f"{CONTROL_URL}/sessions/tactic/set/{session_id}",
+            json={"tactic_index": display_tactic_index},
+            timeout=15
+        )
+        if display_set_res.status_code == 200:
+            display_sync_applied = True
         else:
-             logging.error(f"❌ Falha no Agente Strategies: {agent_res.text}")
+            logging.warning(
+                "Falha ao sincronizar tática global de exibição. session_id=%s tactic_index=%s status=%s",
+                session_id, display_tactic_index, display_set_res.status_code
+            )
 
+        return jsonify({
+            "success": True,
+            "mode": "individual_per_student",
+            "consensus_tactic_index": None,
+            "display_tactic_index": display_tactic_index,
+            "display_sync_applied": display_sync_applied,
+            "tactic_distribution": distribution,
+            "ai_calls_count": ai_calls_count,
+            "ai_cache_hit_count": ai_cache_hit_count,
+            "local_rule_count": local_rule_count,
+            "ttl_rule_count": ttl_rule_count,
+            "difficulty_fetch_count": difficulty_fetch_count,
+            "student_decisions": individual_decisions
+        }), 200
     except Exception as e:
-        logging.error(f"Erro na orquestração do Agente: {e}")
-
-    # Se falhar ou não decidir, retorna None para indicar fallback
-    return None
+        logging.error(f"Erro na orquestração do Agente por aluno: {e}")
+        return None
