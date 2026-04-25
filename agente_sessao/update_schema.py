@@ -32,12 +32,17 @@ try:
             student_id VARCHAR(50) NOT NULL,
             current_tactic_index INTEGER NOT NULL DEFAULT 0,
             executed_indices TEXT NOT NULL DEFAULT '[]',
+            current_tactic_started_at TIMESTAMP,
             last_rating INTEGER,
             updated_at TIMESTAMP NOT NULL DEFAULT NOW(),
             PRIMARY KEY (session_id, student_id),
             CONSTRAINT fk_session_student_state_session
                 FOREIGN KEY (session_id) REFERENCES session(id) ON DELETE CASCADE
         );
+    """)
+    cursor.execute("""
+        ALTER TABLE session_student_state
+        ADD COLUMN IF NOT EXISTS current_tactic_started_at TIMESTAMP;
     """)
     print("Ensured table 'session_student_state'.")
 
