@@ -582,6 +582,29 @@ def get_student_tactic_index(session_id, student_id):
             return jsonify({"current_tactic_index": 0, "tactic_started_at": None, "student_started": False}), 200
 
 
+@session_bp.route('/sessions/<int:session_id>/student/<string:student_id>/advance_tactic', methods=['POST'])
+def advance_student_tactic(session_id, student_id):
+    now = datetime.utcnow()
+    with get_db_connection() as conn:
+        ensure_student_progress_table(conn)
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT current_tactic_index FROM student_session_progress
+                WHERE session_id = %s AND student_id = %s
+            """, (session_id, str(student_id)))
+            row = cur.fetchone()
+            if not row:
+                return jsonify({"error": "Progress not found"}), 404
+            new_index = row['current_tactic_index'] + 1
+            cur.execute("""
+                UPDATE student_session_progress
+                SET current_tactic_index = %s, tactic_started_at = %s
+                WHERE session_id = %s AND student_id = %s
+            """, (new_index, now, session_id, str(student_id)))
+            conn.commit()
+    return jsonify({"success": True, "current_tactic_index": new_index}), 200
+
+
 @session_bp.route('/sessions/<int:session_id>/students/progress', methods=['GET'])
 def get_students_progress(session_id):
     with get_db_connection() as conn:

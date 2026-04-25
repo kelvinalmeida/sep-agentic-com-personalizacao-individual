@@ -9,6 +9,7 @@ document.addEventListener("DOMContentLoaded", () => {
     let regras_isActive = false;
     let current_tatic_description = 'Nenhuma tática ativa no momento.';
     let activeTacticIndex = null;
+    let reusoExercisesState = null; // null=desconhecido, true=tem exercícios, false=sem exercícios
 
     const session_id = window.session_id;
     const token = window.token;
@@ -112,6 +113,7 @@ document.addEventListener("DOMContentLoaded", () => {
         reuso_isActive = false;
         envio_informacao_isActive = false;
         regras_isActive = false;
+        reusoExercisesState = null;
 
         // Remove os elementos da tática anterior antes de montar a nova
         removerElemento();
@@ -124,7 +126,17 @@ document.addEventListener("DOMContentLoaded", () => {
                 clearInterval(countdownInterval);
                 const timerEl = document.getElementById("tacticTimer");
                 if (timerEl) timerEl.innerText = "Concluído";
-                fetchCurrentTactic(session_id);
+
+                const isReuso = (tacticName === "Reuso");
+                if (isReuso && (reusoExercisesState === null || reusoExercisesState === true)) {
+                    // Reuso com exercícios: aguarda o aluno completar e passar nos exercícios
+                    return;
+                }
+
+                // Avança automaticamente para a próxima tática
+                fetch(`/sessions/${session_id}/student_advance_tactic`, { method: 'POST' })
+                    .then(() => { activeTacticIndex = null; fetchCurrentTactic(session_id); })
+                    .catch(() => fetchCurrentTactic(session_id));
             } else {
                 let minutes = Math.floor(timeLeft / 60);
                 let seconds = timeLeft % 60;
@@ -294,6 +306,7 @@ document.addEventListener("DOMContentLoaded", () => {
                         })
                             .then(res => res.json())
                             .then(data => {
+                                reusoExercisesState = data.length > 0;
                                 const container = document.getElementById("exercise_container");
 
                                 if (data.length === 0) {
@@ -413,6 +426,7 @@ document.addEventListener("DOMContentLoaded", () => {
                             })
                             .catch(err => {
                                 console.error("Erro ao carregar exercícios:", err);
+                                reusoExercisesState = false;
                             });
 
 
@@ -680,17 +694,25 @@ document.addEventListener("DOMContentLoaded", () => {
                 }
 
                 if (data.session_status === 'not_started') {
+                    activeTacticIndex = null;
                     showStudentStartArea();
                     const btn = document.getElementById("studentStartBtn");
                     if (btn) {
                         btn.disabled = false;
                         btn.innerHTML = '<i class="bi bi-play-circle-fill me-2"></i> Iniciar Minha Sessão';
                     }
+                    const msg = document.getElementById("student-start-msg");
+                    if (msg) msg.innerText = "Clique para iniciar o seu percurso de aprendizagem.";
                     return;
                 }
 
                 if (data.session_status === 'aguardando') {
                     showStudentStartArea();
+                    const btn = document.getElementById("studentStartBtn");
+                    if (btn) {
+                        btn.disabled = true;
+                        btn.innerHTML = '<i class="bi bi-hourglass me-2"></i> Aguardando professor abrir a sessão…';
+                    }
                     return;
                 }
 
@@ -705,15 +727,17 @@ document.addEventListener("DOMContentLoaded", () => {
                     }
                 } else if (data.session_status === 'student_finished') {
                     activeTacticIndex = null;
-                    showStudentTacticArea();
-                    const nameEl = document.getElementById("tacticName");
-                    const timerEl = document.getElementById("tacticTimer");
-                    if (nameEl) nameEl.innerText = "Você concluiu todas as táticas!";
-                    if (timerEl) timerEl.innerText = "--";
+                    clearInterval(countdownInterval);
                     qual_tatica_esta_ativa(false, false, false, false, false);
                     removerElemento();
-                    taticDescription("Parabéns! Você completou todas as táticas desta sessão. Aguarde o encerramento oficial pelo professor.");
-                    clearInterval(countdownInterval);
+                    showStudentStartArea();
+                    const btn = document.getElementById("studentStartBtn");
+                    if (btn) {
+                        btn.disabled = true;
+                        btn.innerHTML = '<i class="bi bi-check-circle-fill me-2"></i> Sessão concluída! Aguardando o professor reiniciar...';
+                    }
+                    const msg = document.getElementById("student-start-msg");
+                    if (msg) msg.innerText = "Parabéns! Você completou todas as táticas. O professor poderá reiniciar a sessão.";
                 } else {
                     activeTacticIndex = null;
                     const nameEl = document.getElementById("tacticName");
@@ -757,8 +781,7 @@ document.addEventListener("DOMContentLoaded", () => {
     const endSessionBtn = document.getElementById("endSessionBtn");
     if (endSessionBtn) {
         endSessionBtn.addEventListener("click", () => {
-            const confirmEnd = prompt("Tem certeza que deseja encerrar a sessão? Digite 'sim' para confirmar.");
-            if (confirmEnd && confirmEnd.trim().toLowerCase() === "sim") {
+            if (confirm("Tem certeza que deseja encerrar a sessão?")) {
                 fetch(`/sessions/end/${session_id}`)
                     .then(response => {
                         if (response.ok) {
@@ -768,8 +791,6 @@ document.addEventListener("DOMContentLoaded", () => {
                         }
                     })
                     .catch(() => alert("Erro ao tentar encerrar a sessão."));
-            } else {
-                alert("Encerramento cancelado.");
             }
         });
     }
@@ -780,9 +801,9 @@ document.addEventListener("DOMContentLoaded", () => {
             if (debateSection) debateSection.classList.remove("d-none");
             debateSicrono(window.teacher_debate_chat_id, "teacher_debate_chat");
         }
-        if (window.teacher_has_envio) {
-            const envioSection = document.getElementById("teacher-envio-section");
-            if (envioSection) envioSection.classList.remove("d-none");
+        if (window.teacher_apresentacao_link) {
+            const apresentacaoSection = document.getElementById("teacher-apresentacao-section");
+            if (apresentacaoSection) apresentacaoSection.classList.remove("d-none");
         }
     }
 

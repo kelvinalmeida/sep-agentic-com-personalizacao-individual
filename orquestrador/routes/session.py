@@ -431,6 +431,22 @@ def student_start_own(session_id, current_user=None):
         return jsonify({"error": str(e)}), 503
 
 
+@session_bp.route('/sessions/<int:session_id>/student_advance_tactic', methods=['POST'])
+@token_required
+def student_advance_tactic(session_id, current_user=None):
+    if not current_user or current_user.get('type') != 'student':
+        return jsonify({"error": "Apenas alunos podem avançar sua própria tática"}), 403
+    student_id = current_user.get('id')
+    try:
+        resp = requests.post(f"{CONTROL_URL}/sessions/{session_id}/student/{student_id}/advance_tactic")
+        try:
+            return jsonify(resp.json()), resp.status_code
+        except Exception:
+            return resp.text, resp.status_code
+    except RequestException as e:
+        return jsonify({"error": str(e)}), 503
+
+
 @session_bp.route('/sessions/<int:session_id>/current_tactic', methods=['GET'])
 def get_current_tactic(session_id):
     student_id = request.args.get('student_id')

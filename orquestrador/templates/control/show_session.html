@@ -221,7 +221,7 @@
                 <!-- ===== VISÃO DO PROFESSOR ===== -->
                 <div class="d-flex gap-3 justify-content-center flex-wrap mb-4">
                     <button id="startSessionBtn" class="btn btn-success btn-lg px-5 py-3 shadow fw-bold text-uppercase rounded-pill
-                        {% if session.status == 'in-progress' or session.status == 'finished' %} d-none {% endif %}">
+                        {% if session.status == 'in-progress' %} d-none {% endif %}">
                         <i class="bi bi-play-circle-fill me-2"></i> Abrir Sessão para Alunos
                     </button>
                     <button id="endSessionBtn" class="btn btn-outline-danger btn-lg px-4 py-3">Encerrar Sessão</button>
@@ -233,12 +233,17 @@
                     <div id="teacher_debate_chat"></div>
                 </div>
 
-                <!-- Envio de Informação (sempre visível se existir na estratégia) -->
-                <div id="teacher-envio-section" class="mt-4 mb-4 d-none">
-                    <h5 class="text-info fw-bold"><i class="bi bi-envelope-fill me-2"></i>Envio de Informação</h5>
-                    <div class="alert alert-info">
-                        Esta sessão inclui uma tática de <strong>Envio de Informação</strong>.
-                        Os alunos que chegarem a esta etapa receberão os materiais por e-mail automaticamente.
+                <!-- Apresentação Síncrona (sempre visível se existir na estratégia) -->
+                <div id="teacher-apresentacao-section" class="mt-4 mb-4 d-none">
+                    <h5 class="text-warning fw-bold"><i class="bi bi-camera-video-fill me-2"></i>Apresentação Síncrona</h5>
+                    <div class="alert alert-warning d-flex align-items-center gap-3">
+                        <div>
+                            Esta sessão inclui uma tática de <strong>Apresentação Síncrona</strong>.
+                            Clique no botão para abrir o link da apresentação.
+                        </div>
+                        <button id="teacher-apresentacao-btn" class="btn btn-warning fw-bold rounded-pill px-4" onclick="window.open(window.teacher_apresentacao_link, '_blank')">
+                            <i class="bi bi-camera-video-fill me-2"></i>Abrir Apresentação
+                        </button>
                     </div>
                 </div>
 
@@ -523,14 +528,14 @@
         window.my_id = current_user_json.id;
         window.user_type = current_user_json.type;
         window.teacher_debate_chat_id = null;
-        window.teacher_has_envio = false;
+        window.teacher_apresentacao_link = null;
         {% if session.strategies and session.strategies[0].tatics %}
         {% for tatic in session.strategies[0].tatics %}
         {% if 'debate sincrono' in tatic.name|lower %}
         window.teacher_debate_chat_id = {{ tatic.chat_id if tatic.chat_id is not none else 'null' }};
         {% endif %}
-        {% if 'envio de informa' in tatic.name|lower %}
-        window.teacher_has_envio = true;
+        {% if 'apresentacao sincrona' in tatic.name|lower or 'apresentação síncrona' in tatic.name|lower %}
+        window.teacher_apresentacao_link = {{ tatic.description | tojson if tatic.description is not none else 'null' }};
         {% endif %}
         {% endfor %}
         {% endif %}
