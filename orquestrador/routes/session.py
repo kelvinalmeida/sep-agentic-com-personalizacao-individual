@@ -447,6 +447,30 @@ def student_advance_tactic(session_id, current_user=None):
         return jsonify({"error": str(e)}), 503
 
 
+@session_bp.route('/sessions/<int:session_id>/student_change_strategy', methods=['POST'])
+@token_required
+def student_change_strategy(session_id, current_user=None):
+    if not current_user or current_user.get('type') != 'student':
+        return jsonify({"error": "Apenas alunos podem fazer esta ação"}), 403
+    student_id = current_user.get('id')
+    data = request.get_json() or {}
+    new_strategy_id = data.get('strategy_id')
+    if not new_strategy_id:
+        return jsonify({"error": "strategy_id é obrigatório"}), 400
+    try:
+        switch_res = requests.post(
+            f"{CONTROL_URL}/sessions/{session_id}/temp_switch_strategy",
+            json={'strategy_id': new_strategy_id}
+        )
+        if switch_res.status_code != 200:
+            return jsonify({"error": "Falha ao mudar estratégia"}), 500
+        # Reset individual student's tactic index to 0
+        requests.post(f"{CONTROL_URL}/sessions/{session_id}/student/{student_id}/start")
+        return jsonify({"success": True}), 200
+    except RequestException as e:
+        return jsonify({"error": str(e)}), 503
+
+
 @session_bp.route('/sessions/<int:session_id>/current_tactic', methods=['GET'])
 def get_current_tactic(session_id):
     student_id = request.args.get('student_id')

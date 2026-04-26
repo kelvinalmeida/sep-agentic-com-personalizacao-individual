@@ -723,7 +723,44 @@ document.addEventListener("DOMContentLoaded", () => {
                     taticDescription(data.tactic.description || "Nenhuma descrição disponível");
                     if (data.current_tactic_index !== activeTacticIndex) {
                         activeTacticIndex = data.current_tactic_index;
-                        startCountdown(data.remaining_time, data.strategy_tactics, data.tactic.name);
+
+                        const tacticNameLower = data.tactic.name.trim().toLowerCase();
+                        const isMudancaEstrategia =
+                            tacticNameLower.includes('mudança de estratégia') ||
+                            tacticNameLower.includes('mudanca de estrategia') ||
+                            tacticNameLower.includes('mudança de estrategia') ||
+                            tacticNameLower.includes('mudanca de estratégia');
+
+                        if (isMudancaEstrategia) {
+                            clearInterval(countdownInterval);
+                            const timerEl = document.getElementById("tacticTimer");
+                            if (timerEl) timerEl.innerText = "...";
+                            taticDescription("Mudando de estratégia, aguarde...");
+                            const description = data.tactic.description || '';
+                            const matchId = description.match(/\d+/);
+                            if (matchId) {
+                                const newStrategyId = parseInt(matchId[0]);
+                                fetch(`/sessions/${session_id}/student_change_strategy`, {
+                                    method: 'POST',
+                                    headers: { 'Content-Type': 'application/json' },
+                                    body: JSON.stringify({ strategy_id: newStrategyId })
+                                })
+                                .then(() => { activeTacticIndex = null; setTimeout(() => location.reload(), 1000); })
+                                .catch(() => {
+                                    activeTacticIndex = null;
+                                    fetch(`/sessions/${session_id}/student_advance_tactic`, { method: 'POST' })
+                                        .then(() => fetchCurrentTactic(session_id))
+                                        .catch(() => fetchCurrentTactic(session_id));
+                                });
+                            } else {
+                                activeTacticIndex = null;
+                                fetch(`/sessions/${session_id}/student_advance_tactic`, { method: 'POST' })
+                                    .then(() => fetchCurrentTactic(session_id))
+                                    .catch(() => fetchCurrentTactic(session_id));
+                            }
+                        } else {
+                            startCountdown(data.remaining_time, data.strategy_tactics, data.tactic.name);
+                        }
                     }
                 } else if (data.session_status === 'student_finished') {
                     activeTacticIndex = null;
