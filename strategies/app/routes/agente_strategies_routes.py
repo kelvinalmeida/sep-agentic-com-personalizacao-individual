@@ -321,9 +321,11 @@ def decide_rules_logic():
     # --- 1. Extração do Contexto ---
     performance_summary = data.get('performance_summary', 'Sem dados.')
     student_profile = data.get('student_profile_summary', 'Perfil desconhecido.')
-    # domain_content = data.get('article_text', '')[:800] 
+    individual_student_summary = data.get('individual_student_summary', 'Perfil individual não disponível.')
+    student_score_summary = data.get('student_score_summary', 'Sem notas registradas.')
     domain_content = data.get('article_text', '')
-    
+    total_tactics = data.get('total_tactics', 0)
+
     current_strategy_id = data.get('strategy_id')
     executed_tactics_ids = data.get('executed_tactics', [])
 
@@ -336,23 +338,23 @@ def decide_rules_logic():
             return jsonify({"error": "Falha na conexão com o banco"}), 500
 
         with conn.cursor() as cur:
-            # A. Táticas Já Executadas (Opções para Reforço)
-            # Buscamos Nome e Descrição para o LLM saber o que cada uma faz
-            executed_options = []
-            if executed_tactics_ids:
-                clean_ids = [int(x) for x in executed_tactics_ids]
+            # A. Todas as táticas repetíveis da estratégia (exceto Regra e Mudança de Estratégia)
+            repeatable_options = []
+            if current_strategy_id:
                 cur.execute("""
-                    SELECT id, name, description 
-                    FROM tactics 
-                    WHERE id = ANY(%s)
-                """, (clean_ids,))
+                    SELECT id, name, description
+                    FROM tactics
+                    WHERE strategy_id = %s
+                    AND name NOT ILIKE '%%mudanc%%'
+                    AND LOWER(TRIM(name)) NOT IN ('regra', 'regras')
+                    ORDER BY id
+                """, (int(current_strategy_id),))
                 rows = cur.fetchall()
                 for r in rows:
                     r_id = r['id'] if isinstance(r, dict) else r[0]
                     r_name = r['name'] if isinstance(r, dict) else r[1]
                     r_desc = r['description'] if isinstance(r, dict) else r[2]
-                    # Formata para o LLM: "ID 1: Nome (Desc)"
-                    executed_options.append(f"- ID {r_id}: {r_name} ({r_desc})")
+                    repeatable_options.append(f"- ID {r_id}: {r_name} ({r_desc or 'sem descrição'})")
 
             # B. Outras Estratégias Disponíveis (Opções para Avanço)
             # IMPORTANTE: Agora buscamos o 'score' para priorizar as melhores
@@ -386,33 +388,49 @@ def decide_rules_logic():
         # --- 3. Prompt Avançado ---
         prompt = f"""
         Você é o 'Agente de Regras' (Cérebro da Sessão) de um Sistema Tutor Inteligente.
-        
-        === SITUAÇÃO ATUAL ===
-        Perfil da Turma: {student_profile}
-        Desempenho: {performance_summary}
-        Conteúdo: {domain_content}...
 
-        === OPÇÕES DE REFORÇO (Histórico Recente) ===
-        {chr(10).join(executed_options) if executed_options else "Nenhuma tática executada ainda."}
+        === ALUNO ATUAL ===
+        {individual_student_summary}
 
-        === OPÇÕES DE PRÓXIMA ESTRATÉGIA (Banco de Estratégias) ===
+        === NOTAS DO ALUNO NESTA SESSÃO ===
+        {student_score_summary}
+
+        === PERFIL DA TURMA ===
+        {student_profile}
+
+        === DESEMPENHO GERAL DA SESSÃO ===
+        {performance_summary}
+
+        === CONTEÚDO DA AULA ===
+        {domain_content}
+
+        === OPÇÕES DE TÁTICAS QUE PODEM SER REPETIDAS ===
+        {chr(10).join(repeatable_options) if repeatable_options else "Nenhuma tática disponível para repetição."}
+
+        === OPÇÕES DE PRÓXIMA ESTRATÉGIA ===
         {chr(10).join(available_strategies)}
 
         === SUA MISSÃO (REGRA DE DECISÃO) ===
-        1. ANALISE O DESEMPENHO:
-           - Se for BAIXO/RUIM: Você DEVE escolher "REPEAT_TACTIC".
-             * **Importante:** Não escolha aleatoriamente. Escolha a tática da lista "OPÇÕES DE REFORÇO" que melhor resolve o problema. 
-             * Exemplo: Se eles não entenderam a teoria, repita a tática de "Reuso". Se faltou tirar duvidas, repita o "Debate Síncrono", "Apresentação Síncrona" ou "Envio de Informação".
-           
-           - Se for ALTO/BOM: Você DEVE escolher "NEXT_STRATEGY".
-             * **Importante:** Escolha a estratégia da lista "OPÇÕES DE PRÓXIMA ESTRATÉGIA" que tiver a MAIOR 'Nota de Qualidade' (Score), a menos que o perfil da turma exija algo específico.
+        Analise as NOTAS DO ALUNO, o perfil individual, o desempenho e o conteúdo para decidir:
+
+        1. Se a nota do aluno for BAIXA (abaixo de 70%) ou o desempenho for RUIM → escolha "REPEAT_TACTIC".
+           * Escolha a tática da lista "OPÇÕES DE TÁTICAS QUE PODEM SER REPETIDAS" que melhor corrige a dificuldade do aluno.
+           * Considere o perfil individual: se o aluno prefere vídeos, prefira táticas visuais; se prefere texto, prefira Reuso com PDFs.
+           * IMPORTANTE: após a tática repetida ser concluída, a sessão será encerrada automaticamente para este aluno.
+
+        2. Se a nota do aluno for BOA (70% ou acima) ou o desempenho for BOM/ALTO → escolha "NEXT_STRATEGY".
+           * Escolha a estratégia da lista "OPÇÕES DE PRÓXIMA ESTRATÉGIA" com maior Nota de Qualidade (Score).
+           * Se o perfil individual exigir algo específico, priorize isso.
+
+        3. Se todas as táticas disponíveis ({total_tactics} no total) já foram executadas, ou se a nota for excelente E não houver próxima estratégia disponível → escolha "END_SESSION".
+           * "END_SESSION" significa encerrar imediatamente a participação deste aluno nesta sessão.
 
         === SAÍDA (JSON OBRIGATÓRIO) ===
         {{
-            "decision": "REPEAT_TACTIC" ou "NEXT_STRATEGY",
-            "target_id": <ID inteiro da Tática escolhida ou da Estratégia escolhida>,
-            "target_name": "<Nome da opção escolhida>",
-            "reasoning": "<Explique por que escolheu ESSE ID específico (ex: 'Escolhi a estratégia X pois tem nota 9' ou 'Repeti o Reuso pois a turma falhou na teoria')>"
+            "decision": "REPEAT_TACTIC" ou "NEXT_STRATEGY" ou "END_SESSION",
+            "target_id": <ID inteiro da tática ou estratégia escolhida, ou null para END_SESSION>,
+            "target_name": "<Nome da opção escolhida, ou 'Encerrar Sessão' para END_SESSION>",
+            "reasoning": "<Explique a decisão considerando o perfil individual do aluno>"
         }}
         """
 

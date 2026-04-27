@@ -134,3 +134,63 @@ def generate_personalized_study_text():
     except Exception as e:
         logging.error(f"Erro em generate_personalized_study_text: {str(e)}")
         return jsonify({"error": str(e)}), 500
+
+
+@agente_perso_individual_bp.route('/agent/generate_wrong_answers_study_text', methods=['POST'])
+def generate_wrong_answers_study_text():
+    """
+    Gera um texto pedagógico (~5 min de leitura) explicando os conceitos
+    das questões erradas pelo aluno, SEM revelar as respostas corretas.
+    """
+    data = request.get_json() or {}
+    wrong_questions = data.get('wrong_questions', [])
+    profile_summary = data.get('profile_summary', '')
+
+    if not wrong_questions:
+        return jsonify({"error": "wrong_questions é obrigatório"}), 400
+
+    if not Config.GROQ_API_KEY:
+        return jsonify({"error": "GROQ_API_KEY não configurada"}), 500
+
+    questions_text = "\n".join(f"- {q}" for q in wrong_questions) if isinstance(wrong_questions, list) else str(wrong_questions)
+
+    try:
+        prompt = f"""
+        Você é um tutor especializado em personalização do aprendizado.
+        Um aluno errou as questões listadas abaixo. Crie um texto educativo em português
+        com cerca de 5 minutos de leitura (aproximadamente 650 a 800 palavras) que explique
+        os conceitos envolvidos nessas questões.
+
+        PERFIL DO ALUNO:
+        {profile_summary}
+
+        QUESTÕES QUE O ALUNO ERROU (apenas o enunciado):
+        {questions_text}
+
+        REGRAS OBRIGATÓRIAS:
+        - NÃO revele as respostas corretas em nenhum momento.
+        - NÃO mencione qual era a alternativa certa.
+        - Explique os conceitos e assuntos envolvidos de forma clara e didática.
+        - Use exemplos práticos para ilustrar os conceitos.
+        - Escreva em linguagem acessível e motivadora.
+        - Inclua uma mini seção final com 3 dicas de como estudar esses assuntos.
+        - Não use markdown e não use JSON.
+        """
+
+        client = _build_groq_client()
+        response = client.chat.completions.create(
+            model="llama-3.3-70b-versatile",
+            messages=[
+                {"role": "system", "content": "Você escreve materiais pedagógicos personalizados. Nunca revele respostas corretas."},
+                {"role": "user", "content": prompt}
+            ],
+            temperature=0.4
+        )
+
+        study_text = (response.choices[0].message.content or "").strip()
+
+        return jsonify({"study_text": study_text}), 200
+
+    except Exception as e:
+        logging.error(f"Erro em generate_wrong_answers_study_text: {str(e)}")
+        return jsonify({"error": str(e)}), 500

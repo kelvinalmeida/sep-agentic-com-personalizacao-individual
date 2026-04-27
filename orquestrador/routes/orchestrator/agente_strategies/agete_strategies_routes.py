@@ -97,31 +97,29 @@ def orchestrate_validation():
 @agete_strategies_bp.route('/sessions/<int:session_id>/execute_rules', methods=['POST'])
 def execute_rules_logic(session_id):
     """
-    Orquestrador da Tática de Regras.
-    Agrega contexto de todos os serviços e consulta o Agente de Estratégia para decisão.
+    Orquestrador da Tática de Regras (por aluno).
+    Considera perfil individual do aluno + perfil da turma + desempenho para decisão da IA.
     """
     try:
-        # 1. Agregação de Contexto (Data Fetching)
+        data = request.get_json() or {}
+        student_id = data.get('student_id')
 
-        # A. Do Serviço Control: Detalhes da Sessão
+        # A. Detalhes da Sessão
         try:
             session_response = requests.get(f"{CONTROL_URL}/sessions/{session_id}", timeout=10)
             if session_response.status_code != 200:
                 return jsonify({"error": "Falha ao buscar sessão no Control"}), 502
             session_data = session_response.json()
-
-            # Control retorna strategies como lista de strings/ints
             strategies_list = session_data.get('strategies', [])
             strategy_id = strategies_list[0] if strategies_list else None
-            domain_id = int(session_data.get('domains', None)[0]) if session_data.get('domains') else None
-            # return  jsonify(domain_id)
+            domain_id = int(session_data.get('domains', [None])[0]) if session_data.get('domains') else None
             current_tactic_index = session_data.get('current_tactic_index', 0)
             student_ids = session_data.get('students', [])
         except Exception as e:
             logging.error(f"Erro ao conectar com Control (Sessão): {e}")
             return jsonify({"error": "Control Service unavailable"}), 503
 
-        # B. Do Serviço Control: Resumo do Agente (Performance)
+        # B. Resumo de Performance (global da sessão)
         agent_summary_text = "Resumo indisponível."
         try:
             summary_response = requests.get(f"{CONTROL_URL}/sessions/{session_id}/agent_summary", timeout=15)
@@ -130,157 +128,156 @@ def execute_rules_logic(session_id):
         except Exception as e:
             logging.warning(f"Erro ao buscar agent_summary: {e}")
 
-        # C. Do Serviço Strategies: Detalhes da Estratégia (para calcular executed_tactics)
+        # C. Táticas da Estratégia
         executed_tactics_ids = []
         strategy_tactics = []
         try:
             if strategy_id:
                 strat_response = requests.get(f"{STRATEGIES_URL}/strategies/{strategy_id}", timeout=10)
                 if strat_response.status_code == 200:
-                    strategy_data = strat_response.json()
-                    strategy_tactics = strategy_data.get('tatics', [])
-
-                    # CORREÇÃO: Não inferir execução baseada apenas no índice (i < current_index).
-                    # Se o agente pulou táticas (ex: foi da 1 para a 4), as táticas 2 e 3 não foram executadas.
-                    # Como não temos log exato de navegação no MVP, enviamos lista vazia ou parcial
-                    # para permitir que o agente escolha qualquer tática anterior se julgar necessário.
-                    #
-                    # OLD LOGIC:
-                    # for i, tactic in enumerate(strategy_tactics):
-                    #     if i < current_tactic_index:
-                    #         executed_tactics_ids.append(tactic['id'])
-
-                    # NOVO: Usar executed_indices do Control
+                    strategy_tactics = strat_response.json().get('tatics', [])
                     executed_indices = session_data.get('executed_indices', [])
-
-                    # Mapeia índices para IDs
                     for idx in executed_indices:
                         if 0 <= idx < len(strategy_tactics):
                             executed_tactics_ids.append(strategy_tactics[idx]['id'])
-
-                    # Adiciona a atual (que acabou de finalizar/está em Regra)
                     if 0 <= current_tactic_index < len(strategy_tactics):
                         current_id = strategy_tactics[current_tactic_index]['id']
                         if current_id not in executed_tactics_ids:
                             executed_tactics_ids.append(current_id)
-
         except Exception as e:
             logging.error(f"Erro ao conectar com Strategies: {e}")
             return jsonify({"error": "Strategies Service unavailable"}), 503
 
-        # D. Do Serviço User: Perfil da Turma
-        student_profile_summary = "Perfil desconhecido."
+        # D. Perfil da Turma
+        class_profile_summary = "Perfil da turma desconhecido."
         try:
             if student_ids:
-                user_payload = {"student_ids": student_ids}
-                user_response = requests.post(f"{USER_URL}/students/summarize_preferences", json=user_payload, timeout=10)
+                user_response = requests.post(f"{USER_URL}/students/summarize_preferences", json={"student_ids": student_ids}, timeout=10)
                 if user_response.status_code == 200:
-                    # O endpoint retorna { "summary": ... } onde summary pode ser dict ou string
                     summary_data = user_response.json().get('summary', "")
-                    if isinstance(summary_data, dict):
-                        student_profile_summary = json.dumps(summary_data, ensure_ascii=False)
-                    else:
-                        student_profile_summary = str(summary_data)
-            
-            # logging.info(f"Perfil resumido dos alunos para a tatica de regras: {student_profile_summary}")
+                    class_profile_summary = json.dumps(summary_data, ensure_ascii=False) if isinstance(summary_data, dict) else str(summary_data)
         except Exception as e:
-            logging.warning(f"Erro ao conectar com User: {e}")
+            logging.warning(f"Erro ao buscar perfil da turma: {e}")
 
-        # E. Do Serviço Domain: Conteúdo da Aula
-        article_text = ""
+        # E. Perfil Individual do Aluno
+        individual_student_summary = "Perfil individual não disponível."
+        if student_id:
+            try:
+                ind_response = requests.post(f"{USER_URL}/agent/summarize_logged_user", json={"user_id": student_id}, timeout=10)
+                if ind_response.status_code == 200:
+                    individual_student_summary = ind_response.json().get('summary', "")
+            except Exception as e:
+                logging.warning(f"Erro ao buscar perfil individual do aluno: {e}")
+
+        # F. Conteúdo do Domínio
+        domain_name_and_description = {}
         try:
-            # domain_response = requests.get(f"{DOMAIN_URL}/get_content/2", timeout=10)
-            domain_response = requests.get(f"{DOMAIN_URL}/domains/{domain_id}", timeout=10)
-            domain_name_and_description = {
-                "Conteudo da aula": domain_response.json().get("name", ""),
-                "description do conteúdo da aula": domain_response.json().get("description", "")
-            }   
-            # return jsonify(domain_name_and_description)
-
-
-
-            if domain_response.status_code == 200:
-                article_text = domain_response.json().get('content', "")
+            if domain_id:
+                domain_response = requests.get(f"{DOMAIN_URL}/domains/{domain_id}", timeout=10)
+                if domain_response.status_code == 200:
+                    domain_name_and_description = {
+                        "Conteudo da aula": domain_response.json().get("name", ""),
+                        "description do conteúdo da aula": domain_response.json().get("description", "")
+                    }
         except Exception as e:
-             logging.warning(f"Erro ao conectar com Domain: {e}")
+            logging.warning(f"Erro ao conectar com Domain: {e}")
 
-        # 2. Consulta à Tática de Regras (Decision Making)
+        # G. Notas do Aluno na Sessão
+        student_score_summary = "Sem notas registradas para este aluno."
+        if student_id:
+            verified = [v for v in session_data.get('verified_answers', []) if str(v.get('student_id', '')) == str(student_id)]
+            extra = [e for e in session_data.get('extra_notes', []) if str(e.get('student_id', '')) == str(student_id)]
+
+            parts = []
+            if verified:
+                scores = [v.get('score', 0) for v in verified]
+                total_questions = max(len(v.get('answers', [])) for v in verified) or 1
+                latest = verified[-1]
+                latest_pct = int((latest.get('score', 0) / max(len(latest.get('answers', [])), 1)) * 100)
+                parts.append(
+                    f"{len(scores)} tentativa(s) nos exercícios. "
+                    f"Notas obtidas: {scores}. "
+                    f"Última nota: {latest.get('score', 0)}/{max(len(latest.get('answers', [])), 1)} ({latest_pct}%)."
+                )
+            if extra:
+                parts.append(f"Nota extra atribuída pelo professor: {extra[-1].get('extra_notes', 'N/A')}.")
+
+            if parts:
+                student_score_summary = " ".join(parts)
+
+        # 2. Consulta à IA de Regras
         decision_payload = {
             "strategy_id": strategy_id,
             "executed_tactics": executed_tactics_ids,
             "performance_summary": agent_summary_text,
-            "student_profile_summary": student_profile_summary,
-            "article_text": domain_name_and_description
+            "student_profile_summary": class_profile_summary,
+            "individual_student_summary": individual_student_summary,
+            "student_score_summary": student_score_summary,
+            "article_text": domain_name_and_description,
+            "total_tactics": len(strategy_tactics)
         }
+
+        # return jsonify({"received_payload": decision_payload})  # Para debug do payload enviado à IA
 
         decision_data = {}
         try:
             agent_response = requests.post(f"{STRATEGIES_URL}/agent/decide_rules_logic", json=decision_payload, timeout=30)
+            # return jsonify({"decision_data": decision_data})  # Para debug da decisão da IA
             if agent_response.status_code == 200:
                 decision_data = agent_response.json().get('rule_execution', {})
             else:
                 logging.error(f"Strategies Agent retornou erro: {agent_response.status_code}")
-                # Fallback seguro
-                decision_data = {
-                    "decision": "NEXT_STRATEGY", # Na dúvida, avança
-                    "target_id": None,
-                    "reasoning": "Agente indisponível. Avançando por segurança."
-                }
+                decision_data = {"decision": "NEXT_STRATEGY", "target_id": None, "reasoning": "Agente indisponível. Avançando por segurança."}
         except Exception as e:
             logging.error(f"Erro ao chamar Strategies Agent: {e}")
-            # Fallback seguro
-            decision_data = {
-                "decision": "NEXT_STRATEGY",
-                "target_id": None,
-                "reasoning": "Erro de conexão com Agente. Avançando."
-            }
+            decision_data = {"decision": "NEXT_STRATEGY", "target_id": None, "reasoning": "Erro de conexão com Agente. Avançando."}
 
         decision = decision_data.get('decision')
         target_id = decision_data.get('target_id')
         reasoning = decision_data.get('reasoning', '')
-
-        # 3. Execução da Ação (Actuation)
         action_taken = "Nenhuma ação automática."
 
-        if decision == "REPEAT_TACTIC" and target_id:
-            # Cenário A: Reuso -> Voltar para a tática específica
-            # Precisamos achar o INDEX dessa tática na estratégia atual
-            target_index = -1
-            for i, tactic in enumerate(strategy_tactics):
-                if tactic['id'] == target_id:
-                    target_index = i
-                    break
-
+        # 3. Execução da Ação (por aluno)
+        if decision == "REPEAT_TACTIC" and target_id and student_id:
+            target_index = next((i for i, t in enumerate(strategy_tactics) if t['id'] == target_id), -1)
             if target_index >= 0:
                 try:
-                    requests.post(f"{CONTROL_URL}/sessions/tactic/set/{session_id}", json={"tactic_index": target_index}, timeout=5)
-                    action_taken = f"Voltando para tática ID {target_id} (Index {target_index})"
-
-                    # Definir flag para encerrar a sessão após essa tática
-                    try:
-                        requests.post(f"{CONTROL_URL}/sessions/{session_id}/set_end_flag", timeout=5)
-                    except Exception as e:
-                        logging.error(f"Erro ao setar flag de fim de sessão: {e}")
-
+                    # Redireciona o aluno para a tática escolhida (set_tactic reseta should_end_session=FALSE)
+                    requests.post(
+                        f"{CONTROL_URL}/sessions/{session_id}/student/{student_id}/set_tactic",
+                        json={"tactic_index": target_index},
+                        timeout=5
+                    )
+                    # Flag: ao concluir essa tática, a sessão encerra automaticamente para o aluno
+                    requests.post(
+                        f"{CONTROL_URL}/sessions/{session_id}/student/{student_id}/set_end_flag",
+                        timeout=5
+                    )
+                    action_taken = f"Aluno redirecionado para tática ID {target_id} (índice {target_index}); sessão encerrará após conclusão"
                 except Exception as e:
-                    logging.error(f"Erro ao setar tática no Control: {e}")
+                    logging.error(f"Erro ao redirecionar tática do aluno: {e}")
             else:
-                logging.warning(f"Tática alvo ID {target_id} não encontrada na estratégia atual.")
+                logging.warning(f"Tática ID {target_id} não encontrada na estratégia atual.")
 
-        elif decision == "NEXT_STRATEGY":
-            # Cenário B: Mudança -> Trocar estratégia
-            if target_id:
-                 try:
-                    requests.post(f"{CONTROL_URL}/sessions/{session_id}/temp_switch_strategy", json={"strategy_id": target_id}, timeout=5)
-                    action_taken = f"Trocando para estratégia ID {target_id}"
-                    # NOTA: Não definimos 'set_end_flag' aqui.
-                    # Requisito: Se mudar de estratégia, deve executar TODAS as táticas dela, não encerrar na primeira.
+        elif decision == "NEXT_STRATEGY" and target_id and student_id:
+            try:
+                requests.post(f"{CONTROL_URL}/sessions/{session_id}/temp_switch_strategy", json={"strategy_id": target_id}, timeout=5)
+                requests.post(f"{CONTROL_URL}/sessions/{session_id}/student/{student_id}/start", timeout=5)
+                action_taken = f"Estratégia trocada para ID {target_id} e aluno reiniciado no índice 0"
+            except Exception as e:
+                logging.error(f"Erro ao trocar estratégia: {e}")
 
-                 except Exception as e:
-                    logging.error(f"Erro ao trocar estratégia no Control: {e}")
-            else:
-                 # Se não tiver ID alvo, provavelmente devemos manter o fluxo ou é fallback
-                 pass
+        elif decision == "END_SESSION" and student_id:
+            end_index = len(strategy_tactics)
+            try:
+                requests.post(
+                    f"{CONTROL_URL}/sessions/{session_id}/student/{student_id}/set_tactic",
+                    json={"tactic_index": end_index},
+                    timeout=5
+                )
+                action_taken = "Participação do aluno encerrada (sessão concluída)"
+            except Exception as e:
+                logging.error(f"Erro ao encerrar participação do aluno: {e}")
 
         return jsonify({
             "success": True,

@@ -6,8 +6,10 @@ document.addEventListener("DOMContentLoaded", () => {
     let apresentacaoSicrona_isActive = false;
     let reuso_isActive = false;
     let envio_informacao_isActive = false;
-    let regras_isActive = false; // Novo flag para Regras
+    let regras_isActive = false;
     let current_tatic_description = 'Nenhuma tática ativa no momento.';
+    let activeTacticIndex = null;
+    let reusoExercisesState = null; // null=desconhecido, true=tem exercícios, false=sem exercícios
 
     const session_id = window.session_id;
     const token = window.token;
@@ -37,14 +39,11 @@ document.addEventListener("DOMContentLoaded", () => {
 
     taticDescription("Sessão finalizada ou sem tática ativa no momento.");
     function taticDescription(description) {
-
         if (description === 'hidden' || description === undefined || description.trim() === "") {
             description = "Nenhuma descrição disponível";
         }
-
         const descriptionElement = document.getElementById("current_tatic_description");
-
-        descriptionElement.innerText = description;
+        if (descriptionElement) descriptionElement.innerText = description;
     }
 
 
@@ -58,7 +57,7 @@ document.addEventListener("DOMContentLoaded", () => {
     }
 
 
-    function debateSicrono(id_chat) {
+    function debateSicrono(id_chat, targetContainerId = "tatic_here") {
         fetch(`/chat_fragment/${id_chat}/${session_id}`)
             .then(response => response.text())
             .then(html => {
@@ -78,11 +77,8 @@ document.addEventListener("DOMContentLoaded", () => {
                         newScript.src = oldScript.src;
                         newScript.onload = () => {
                             loadedScripts++;
-                            // Só inicializa se for o último script carregado ou se só houver ele
                             if (loadedScripts === totalScripts && typeof initializeChatComponent === "function") {
-                                if (currentChatUI) {
-                                    currentChatUI.destroy();
-                                }
+                                if (currentChatUI) currentChatUI.destroy();
                                 currentChatUI = initializeChatComponent();
                             }
                         };
@@ -93,35 +89,36 @@ document.addEventListener("DOMContentLoaded", () => {
                     }
                 });
 
-                // Caso não tenha scripts externos, mas tenha inline com a função já definida
                 if (totalScripts === 0 && typeof initializeChatComponent === "function") {
-                    if (currentChatUI) {
-                        currentChatUI.destroy();
-                    }
+                    if (currentChatUI) currentChatUI.destroy();
                     currentChatUI = initializeChatComponent();
                 }
 
-                const chatContainer = document.getElementById("tatic_here");
-                chatContainer.innerHTML = ""; // Limpa o conteúdo anterior
+                const chatContainer = document.getElementById(targetContainerId);
+                chatContainer.innerHTML = "";
                 chatContainer.appendChild(chatHere);
             });
-
-        // realod_page();
     }
 
 
     function startCountdown(remainingTime, strategyTactics, tacticName) {
         clearInterval(countdownInterval);
-        let timeLeft = remainingTime;
+        // Reuso: se o tempo já expirou ao recarregar a página, garante pelo menos
+        // 1 tick no branch "else" para que a UI de abas seja construída antes de parar.
+        let timeLeft = (remainingTime <= 0 && tacticName === "Reuso") ? 1 : remainingTime;
 
         // Resetar estado de ativação a cada nova tática
         taticaAtiva = false;
 
-        // Opcional: resetar todos os flags
         debateSicrono_isActive = false;
         apresentacaoSicrona_isActive = false;
         reuso_isActive = false;
         envio_informacao_isActive = false;
+        regras_isActive = false;
+        reusoExercisesState = null;
+
+        // Remove os elementos da tática anterior antes de montar a nova
+        removerElemento();
 
         countdownInterval = setInterval(() => {
             // Evitar auto-avanço se for a tática de "Regra", pois ela tem lógica própria de execução
@@ -129,44 +126,25 @@ document.addEventListener("DOMContentLoaded", () => {
 
             if (timeLeft <= 0 && !isRegra) {
                 clearInterval(countdownInterval);
-                document.getElementById("tacticTimer").innerText = "Concluído";
-                // --- CÓDIGO NOVO: Tenta avançar automaticamente ---
-                const nextBtn = document.getElementById("nextTacticBtn");
-                // Verifica se o botão existe e não está oculto (é professor)
-                if (nextBtn && !nextBtn.classList.contains("d-none")) {
-                    console.log("Tempo esgotado. Avançando para a próxima tática/estratégia...");
-                    
-                    const agentToggle = document.getElementById("agentToggle");
-                    if (agentToggle && agentToggle.checked) {
-                        showThinking();
-                    }
+                const timerEl = document.getElementById("tacticTimer");
+                if (timerEl) timerEl.innerText = "Concluído";
 
-                    // Chama a rota de avançar
-                    fetch(`/sessions/${session_id}/next_tactic`, { method: 'POST' })
-                    .then(response => {
-                        hideThinking();
-                        if(response.ok) {
-                            response.json().then(data => {
-                                if (data.agent_decision) {
-                                    showReasoning(data.agent_decision);
-                                    sessionStorage.setItem("latestReasoning_" + session_id, JSON.stringify(data.agent_decision));
-                                }
-                                fetchCurrentTactic(session_id);
-                            });
-                        }
-                    })
-                    .catch(err => {
-                        hideThinking();
-                    });
-                } else {
-                    // Se for aluno, apenas atualiza para ver se o professor mudou
-                    fetchCurrentTactic(session_id); 
+                const isReuso = (tacticName === "Reuso");
+                if (isReuso && (reusoExercisesState === null || reusoExercisesState === true)) {
+                    // Reuso com exercícios: aguarda o aluno completar e passar nos exercícios
+                    return;
                 }
+
+                // Avança automaticamente para a próxima tática
+                fetch(`/sessions/${session_id}/student_advance_tactic`, { method: 'POST' })
+                    .then(() => { activeTacticIndex = null; fetchCurrentTactic(session_id); })
+                    .catch(() => fetchCurrentTactic(session_id));
             } else {
                 let minutes = Math.floor(timeLeft / 60);
                 let seconds = timeLeft % 60;
                 let formattedTime = `${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`;
-                document.getElementById("tacticTimer").innerText = formattedTime;
+                const timerEl2 = document.getElementById("tacticTimer");
+                if (timerEl2) timerEl2.innerText = formattedTime;
 
                 timeLeft--;
 
@@ -293,34 +271,59 @@ document.addEventListener("DOMContentLoaded", () => {
                         const pdfs = JSON.parse(pdfData);
 
                         const pdfContainer = document.getElementById("pdf_container");
+                        const _studyTextKey = `reuso_study_text_${session_id}_${my_id}`;
+                        const _savedStudyText = localStorage.getItem(_studyTextKey);
 
-                        pdfs.forEach(pdf => {
-                            fetch(`/pdfs/${pdf.id}`, {
-                                headers: {
-                                    "Authorization": `Bearer ${token}`
-                                }
-                            })
-                                .then(response => {
-                                    if (!response.ok) {
-                                        throw new Error("Erro ao baixar PDF");
+                        if (_savedStudyText) {
+                            // Restaura o texto gerado pela IA em tentativa anterior
+                            const _card = document.createElement('div');
+                            _card.className = 'card border-warning shadow-sm mb-3';
+                            const _cardHeader = document.createElement('div');
+                            _cardHeader.className = 'card-header bg-warning text-dark fw-bold';
+                            _cardHeader.textContent = 'Material de Revisão Personalizado';
+                            const _cardBody = document.createElement('div');
+                            _cardBody.className = 'card-body';
+                            const _hint = document.createElement('p');
+                            _hint.className = 'text-muted small mb-3';
+                            _hint.textContent = 'Leia este material antes de tentar novamente.';
+                            const _textDiv = document.createElement('div');
+                            _textDiv.style.cssText = 'white-space: pre-wrap; line-height: 1.8;';
+                            _textDiv.textContent = _savedStudyText;
+                            _cardBody.appendChild(_hint);
+                            _cardBody.appendChild(_textDiv);
+                            _card.appendChild(_cardHeader);
+                            _card.appendChild(_cardBody);
+                            pdfContainer.innerHTML = '';
+                            pdfContainer.appendChild(_card);
+                        } else {
+                            pdfs.forEach(pdf => {
+                                fetch(`/pdfs/${pdf.id}`, {
+                                    headers: {
+                                        "Authorization": `Bearer ${token}`
                                     }
-                                    return response.blob();
                                 })
-                                .then(blob => {
-                                    const url = URL.createObjectURL(blob);
-                                    const embed = document.createElement("embed");
-                                    embed.src = url;
-                                    embed.type = "application/pdf";
-                                    embed.width = "100%";
-                                    embed.height = "600px";
-                                    embed.className = "mb-3";
+                                    .then(response => {
+                                        if (!response.ok) {
+                                            throw new Error("Erro ao baixar PDF");
+                                        }
+                                        return response.blob();
+                                    })
+                                    .then(blob => {
+                                        const url = URL.createObjectURL(blob);
+                                        const embed = document.createElement("embed");
+                                        embed.src = url;
+                                        embed.type = "application/pdf";
+                                        embed.width = "100%";
+                                        embed.height = "600px";
+                                        embed.className = "mb-3";
 
-                                    pdfContainer.appendChild(embed);
-                                })
-                                .catch(error => {
-                                    console.error("Erro ao carregar PDF: ", error);
-                                });
-                        });
+                                        pdfContainer.appendChild(embed);
+                                    })
+                                    .catch(error => {
+                                        console.error("Erro ao carregar PDF: ", error);
+                                    });
+                            });
+                        }
 
                         // ----------Carregar Exercícios----------
                         fetch(`/domains/${domain_id}/exercises`, {
@@ -330,6 +333,7 @@ document.addEventListener("DOMContentLoaded", () => {
                         })
                             .then(res => res.json())
                             .then(data => {
+                                reusoExercisesState = data.length > 0;
                                 const container = document.getElementById("exercise_container");
 
                                 if (data.length === 0) {
@@ -368,6 +372,34 @@ document.addEventListener("DOMContentLoaded", () => {
                                 container.innerHTML = ""; // Limpa qualquer conteúdo anterior
                                 container.appendChild(form); // Insere o formulário
 
+                                // Restaura countdown do botão se ainda estiver ativo após reload
+                                const _cooldownKey = `reuso_cooldown_end_${session_id}_${my_id}`;
+                                const _cooldownEnd = parseInt(localStorage.getItem(_cooldownKey) || '0');
+                                if (_cooldownEnd > Date.now()) {
+                                    const _restoreBtn = form.querySelector('button[type="submit"]');
+                                    if (_restoreBtn) {
+                                        _restoreBtn.disabled = true;
+                                        let _secsLeft = Math.ceil((_cooldownEnd - Date.now()) / 1000);
+                                        const _updateRestoreBtn = () => {
+                                            const m = Math.floor(_secsLeft / 60);
+                                            const s = _secsLeft % 60;
+                                            _restoreBtn.textContent = `Aguarde ${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')} para tentar novamente`;
+                                        };
+                                        _updateRestoreBtn();
+                                        const _restoreTimer = setInterval(() => {
+                                            _secsLeft--;
+                                            if (_secsLeft <= 0) {
+                                                clearInterval(_restoreTimer);
+                                                _restoreBtn.disabled = false;
+                                                _restoreBtn.textContent = 'Enviar respostas';
+                                                localStorage.removeItem(_cooldownKey);
+                                            } else {
+                                                _updateRestoreBtn();
+                                            }
+                                        }, 1000);
+                                    }
+                                }
+
                                 // Adiciona o event listener de envio DEPOIS de inserir no DOM
                                 form.addEventListener("submit", function (e) {
                                     e.preventDefault();
@@ -400,6 +432,9 @@ document.addEventListener("DOMContentLoaded", () => {
                                     }
 
 
+                                    const submitBtn = form.querySelector('button[type="submit"]');
+                                    if (submitBtn) submitBtn.disabled = true;
+
                                     fetch("/sessions/submit_answer", {
                                         method: "POST",
                                         headers: {
@@ -417,24 +452,163 @@ document.addEventListener("DOMContentLoaded", () => {
                                             if (!response.ok) {
                                                 throw new Error("Erro ao enviar respostas");
                                             }
+                                            return response.json();
+                                        })
+                                        .then(function(respData) {
+                                            const feedbackEl = document.getElementById("formFeedback");
+                                            feedbackEl.textContent = respData.resp;
+                                            console.log("Respostas enviadas:", respData);
 
-                                            response.json().then(data => {
-                                                document.getElementById("formFeedback").textContent = data.resp;
-                                                console.log("Respostas enviadas:", data);
-                                                // form.reset(); // Limpa o formulário após o envio
-                                            });
+                                            if (respData.passed) {
+                                                feedbackEl.className = "mt-2 text-success fw-bold";
+                                                // Limpa dados persistidos ao passar nos exercícios
+                                                localStorage.removeItem(`reuso_cooldown_end_${session_id}_${my_id}`);
+                                                localStorage.removeItem(`reuso_study_text_${session_id}_${my_id}`);
+                                                setTimeout(() => fetchCurrentTactic(session_id), 1500);
+                                            } else {
+                                                feedbackEl.className = "mt-2 text-danger fw-bold";
+
+                                                // --- Desabilita o botão por 3 minutos com countdown ---
+                                                if (submitBtn) {
+                                                    submitBtn.disabled = true;
+                                                    const cooldownEndTime = Date.now() + 180 * 1000;
+                                                    localStorage.setItem(`reuso_cooldown_end_${session_id}_${my_id}`, cooldownEndTime.toString());
+                                                    let secondsLeft = 180;
+                                                    const updateBtn = () => {
+                                                        const mins = Math.floor(secondsLeft / 60);
+                                                        const secs = secondsLeft % 60;
+                                                        submitBtn.textContent = `Aguarde ${String(mins).padStart(2,'0')}:${String(secs).padStart(2,'0')} para tentar novamente`;
+                                                    };
+                                                    updateBtn();
+                                                    const btnCountdown = setInterval(() => {
+                                                        secondsLeft--;
+                                                        if (secondsLeft <= 0) {
+                                                            clearInterval(btnCountdown);
+                                                            submitBtn.disabled = false;
+                                                            submitBtn.textContent = 'Enviar respostas';
+                                                            localStorage.removeItem(`reuso_cooldown_end_${session_id}_${my_id}`);
+                                                        } else {
+                                                            updateBtn();
+                                                        }
+                                                    }, 1000);
+                                                }
+
+                                                // --- Modal informativo ---
+                                                const existingModal = document.getElementById('wrongAnswersModal');
+                                                if (existingModal) existingModal.remove();
+
+                                                const modalEl = document.createElement('div');
+                                                modalEl.id = 'wrongAnswersModal';
+                                                modalEl.className = 'modal fade';
+                                                modalEl.setAttribute('tabindex', '-1');
+                                                modalEl.innerHTML = `
+                                                    <div class="modal-dialog modal-dialog-centered">
+                                                        <div class="modal-content border-warning">
+                                                            <div class="modal-header bg-warning text-dark">
+                                                                <h5 class="modal-title fw-bold">Resultado dos Exercícios</h5>
+                                                                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                                                            </div>
+                                                            <div class="modal-body">
+                                                                <p class="fw-semibold">${feedbackEl.textContent}</p>
+                                                                <hr>
+                                                                <p id="modal-ai-status" class="mb-0">
+                                                                    <span class="spinner-border spinner-border-sm text-warning me-2" role="status"></span>
+                                                                    Gerando material de revisão personalizado com foco nos seus erros...
+                                                                </p>
+                                                            </div>
+                                                            <div class="modal-footer">
+                                                                <button type="button" class="btn btn-warning" data-bs-dismiss="modal">Fechar e Revisar</button>
+                                                            </div>
+                                                        </div>
+                                                    </div>
+                                                `;
+                                                document.body.appendChild(modalEl);
+                                                const bsModal = new bootstrap.Modal(modalEl);
+                                                bsModal.show();
+
+                                                // --- Spinner na aba PDF ---
+                                                const pdfContainer = document.getElementById("pdf_container");
+                                                if (pdfContainer) {
+                                                    pdfContainer.innerHTML = `
+                                                        <div class="text-center p-4">
+                                                            <div class="spinner-border text-warning" role="status"></div>
+                                                            <p class="mt-2 text-muted">Gerando material de revisão personalizado...</p>
+                                                        </div>
+                                                    `;
+                                                    const pdfTabBtn = document.getElementById("pdf-tab");
+                                                    if (pdfTabBtn) new bootstrap.Tab(pdfTabBtn).show();
+                                                }
+
+                                                fetch('/orchestrator/agent/generate_wrong_answers_text', {
+                                                    method: 'POST',
+                                                    headers: { 'Content-Type': 'application/json' },
+                                                    body: JSON.stringify({ student_id: studentId, session_id: session_id })
+                                                })
+                                                .then(r => r.json())
+                                                .then(aiData => {
+                                                    // Persiste o texto gerado para sobreviver a reloads
+                                                    if (aiData.study_text) {
+                                                        localStorage.setItem(`reuso_study_text_${session_id}_${my_id}`, aiData.study_text);
+                                                    }
+
+                                                    // Atualiza o modal com confirmação
+                                                    const modalStatus = document.getElementById('modal-ai-status');
+                                                    if (modalStatus) {
+                                                        modalStatus.innerHTML = `
+                                                            <span class="text-success fw-bold">Material gerado com sucesso!</span>
+                                                            Acesse a aba <strong>PDFs</strong> para ler o conteúdo personalizado focado nas suas dificuldades.
+                                                        `;
+                                                    }
+
+                                                    if (pdfContainer) {
+                                                        const card = document.createElement('div');
+                                                        card.className = 'card border-warning shadow-sm mb-3';
+
+                                                        const cardHeader = document.createElement('div');
+                                                        cardHeader.className = 'card-header bg-warning text-dark fw-bold';
+                                                        cardHeader.textContent = 'Material de Revisão Personalizado';
+
+                                                        const cardBody = document.createElement('div');
+                                                        cardBody.className = 'card-body';
+
+                                                        const hint = document.createElement('p');
+                                                        hint.className = 'text-muted small mb-3';
+                                                        hint.textContent = 'Leia este material antes de tentar novamente.';
+
+                                                        const textDiv = document.createElement('div');
+                                                        textDiv.style.cssText = 'white-space: pre-wrap; line-height: 1.8;';
+                                                        textDiv.textContent = aiData.study_text || 'Não foi possível gerar o material. Tente novamente.';
+
+                                                        cardBody.appendChild(hint);
+                                                        cardBody.appendChild(textDiv);
+                                                        card.appendChild(cardHeader);
+                                                        card.appendChild(cardBody);
+                                                        pdfContainer.innerHTML = '';
+                                                        pdfContainer.appendChild(card);
+                                                    }
+                                                    form.reset();
+                                                })
+                                                .catch(() => {
+                                                    const modalStatus = document.getElementById('modal-ai-status');
+                                                    if (modalStatus) {
+                                                        modalStatus.textContent = 'Não foi possível gerar o material automaticamente. Revise o conteúdo e tente novamente.';
+                                                    }
+                                                    form.reset();
+                                                });
+                                            }
+                                        })
+                                        .catch(function(err) {
+                                            console.error("Erro ao enviar respostas:", err);
+                                            const feedbackEl = document.getElementById("formFeedback");
+                                            feedbackEl.textContent = "Erro ao enviar respostas. Tente novamente.";
+                                            feedbackEl.className = "mt-2 text-danger";
+                                            if (submitBtn) submitBtn.disabled = false;
                                         });
-                                    // .then(response => {
-                                    //     alert("Respostas enviadas com sucesso!");
-                                    //     form.reset();
-                                    // })
-                                    // .catch(err => {
-                                    //     console.error("Erro ao enviar respostas:", err);
-                                    // });
                                 });
                             })
                             .catch(err => {
                                 console.error("Erro ao carregar exercícios:", err);
+                                reusoExercisesState = false;
                             });
 
 
@@ -562,7 +736,8 @@ document.addEventListener("DOMContentLoaded", () => {
                         console.log("Iniciando execução da Tática de Regras...");
                         fetch(`/sessions/${session_id}/execute_rules`, {
                             method: 'POST',
-                            headers: { 'Content-Type': 'application/json' }
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ student_id: my_id })
                         })
                         .then(response => {
                             if (!response.ok) throw new Error("Erro na execução da regra");
@@ -674,13 +849,24 @@ document.addEventListener("DOMContentLoaded", () => {
         location.reload();
     }
 
-    function fetchCurrentTactic(session_id) {
-        // console.log(session_status);
+    function showStudentStartArea() {
+        const startArea = document.getElementById("student-start-area");
+        const tacticArea = document.getElementById("student-tactic-area");
+        if (startArea) startArea.style.display = '';
+        if (tacticArea) tacticArea.style.display = 'none';
+    }
 
-        fetch(`/sessions/${session_id}/current_tactic`)
-            .then(response => {
-                return response.json();
-            })
+    function showStudentTacticArea() {
+        const startArea = document.getElementById("student-start-area");
+        const tacticArea = document.getElementById("student-tactic-area");
+        if (startArea) startArea.style.display = 'none';
+        if (tacticArea) tacticArea.style.display = '';
+    }
+
+    function fetchCurrentTactic(session_id) {
+        const studentParam = my_id ? `?student_id=${my_id}` : '';
+        fetch(`/sessions/${session_id}/current_tactic${studentParam}`)
+            .then(response => response.json())
             .then(data => {
                 console.log("Dados da tática atual: ", data);
 
@@ -690,13 +876,97 @@ document.addEventListener("DOMContentLoaded", () => {
                     return;
                 }
 
+                if (data.session_status === 'not_started') {
+                    // Sessão iniciada/reiniciada pelo professor: limpa material e timer do Reuso
+                    localStorage.removeItem(`reuso_study_text_${session_id}_${my_id}`);
+                    localStorage.removeItem(`reuso_cooldown_end_${session_id}_${my_id}`);
+                    activeTacticIndex = null;
+                    showStudentStartArea();
+                    const btn = document.getElementById("studentStartBtn");
+                    if (btn) {
+                        btn.disabled = false;
+                        btn.innerHTML = '<i class="bi bi-play-circle-fill me-2"></i> Iniciar Minha Sessão';
+                    }
+                    const msg = document.getElementById("student-start-msg");
+                    if (msg) msg.innerText = "Clique para iniciar o seu percurso de aprendizagem.";
+                    return;
+                }
+
+                if (data.session_status === 'aguardando') {
+                    showStudentStartArea();
+                    const btn = document.getElementById("studentStartBtn");
+                    if (btn) {
+                        btn.disabled = true;
+                        btn.innerHTML = '<i class="bi bi-hourglass me-2"></i> Aguardando professor abrir a sessão…';
+                    }
+                    return;
+                }
+
                 if (data.tactic && data.session_status === 'in-progress') {
-                    document.getElementById("tacticName").innerText = data.tactic.name;
+                    showStudentTacticArea();
+                    const nameEl = document.getElementById("tacticName");
+                    if (nameEl) nameEl.innerText = data.tactic.name;
                     taticDescription(data.tactic.description || "Nenhuma descrição disponível");
-                    startCountdown(data.remaining_time, data.strategy_tactics, data.tactic.name);
+                    if (data.current_tactic_index !== activeTacticIndex) {
+                        activeTacticIndex = data.current_tactic_index;
+
+                        const tacticNameLower = data.tactic.name.trim().toLowerCase();
+                        const isMudancaEstrategia =
+                            tacticNameLower.includes('mudança de estratégia') ||
+                            tacticNameLower.includes('mudanca de estrategia') ||
+                            tacticNameLower.includes('mudança de estrategia') ||
+                            tacticNameLower.includes('mudanca de estratégia');
+
+                        if (isMudancaEstrategia) {
+                            clearInterval(countdownInterval);
+                            const timerEl = document.getElementById("tacticTimer");
+                            if (timerEl) timerEl.innerText = "...";
+                            taticDescription("Mudando de estratégia, aguarde...");
+                            const description = data.tactic.description || '';
+                            const matchId = description.match(/\d+/);
+                            if (matchId) {
+                                const newStrategyId = parseInt(matchId[0]);
+                                fetch(`/sessions/${session_id}/student_change_strategy`, {
+                                    method: 'POST',
+                                    headers: { 'Content-Type': 'application/json' },
+                                    body: JSON.stringify({ strategy_id: newStrategyId })
+                                })
+                                .then(() => { activeTacticIndex = null; setTimeout(() => location.reload(), 1000); })
+                                .catch(() => {
+                                    activeTacticIndex = null;
+                                    fetch(`/sessions/${session_id}/student_advance_tactic`, { method: 'POST' })
+                                        .then(() => fetchCurrentTactic(session_id))
+                                        .catch(() => fetchCurrentTactic(session_id));
+                                });
+                            } else {
+                                activeTacticIndex = null;
+                                fetch(`/sessions/${session_id}/student_advance_tactic`, { method: 'POST' })
+                                    .then(() => fetchCurrentTactic(session_id))
+                                    .catch(() => fetchCurrentTactic(session_id));
+                            }
+                        } else {
+                            startCountdown(data.remaining_time, data.strategy_tactics, data.tactic.name);
+                        }
+                    }
+                } else if (data.session_status === 'student_finished') {
+                    activeTacticIndex = null;
+                    clearInterval(countdownInterval);
+                    qual_tatica_esta_ativa(false, false, false, false, false);
+                    removerElemento();
+                    showStudentStartArea();
+                    const btn = document.getElementById("studentStartBtn");
+                    if (btn) {
+                        btn.disabled = true;
+                        btn.innerHTML = '<i class="bi bi-check-circle-fill me-2"></i> Sessão concluída! Aguardando o professor reiniciar...';
+                    }
+                    const msg = document.getElementById("student-start-msg");
+                    if (msg) msg.innerText = "Parabéns! Você completou todas as táticas. O professor poderá reiniciar a sessão.";
                 } else {
-                    document.getElementById("tacticName").innerText = "Sessão finalizada";
-                    document.getElementById("tacticTimer").innerText = "--";
+                    activeTacticIndex = null;
+                    const nameEl = document.getElementById("tacticName");
+                    const timerEl = document.getElementById("tacticTimer");
+                    if (nameEl) nameEl.innerText = "Sessão finalizada";
+                    if (timerEl) timerEl.innerText = "--";
                     qual_tatica_esta_ativa(false, false, false, false, false);
                     removerElemento();
                     taticDescription("Sessão finalizada ou sem tática ativa no momento.");
@@ -705,177 +975,89 @@ document.addEventListener("DOMContentLoaded", () => {
             })
             .catch(error => {
                 console.error("Erro ao buscar tática atual:", error.message);
-                document.getElementById("tacticName").innerText = "Erro ao carregar";
-                document.getElementById("tacticTimer").innerText = "--";
+                const nameEl = document.getElementById("tacticName");
+                const timerEl = document.getElementById("tacticTimer");
+                if (nameEl) nameEl.innerText = "Erro ao carregar";
+                if (timerEl) timerEl.innerText = "--";
             });
     }
 
 
-    // Inicia a sessão ao clicar
-    document.getElementById("startSessionBtn").addEventListener("click", () => {
-        console.log("Iniciando a sessão", session_id);
-
-        const agentToggle = document.getElementById("agentToggle");
-        const useAgent = agentToggle ? agentToggle.checked : false;
-
-        fetch(`/sessions/start/${session_id}`, {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json'
-            },
-            body: JSON.stringify({ use_agent: useAgent })
-        })
-            .then(response => {
-                console.log(response);
+    // ===== PROFESSOR =====
+    const startSessionBtn = document.getElementById("startSessionBtn");
+    if (startSessionBtn) {
+        startSessionBtn.addEventListener("click", () => {
+            fetch(`/sessions/start/${session_id}`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ use_agent: false })
+            }).then(response => {
                 if (response.ok) {
-                    // console.log(response)
-                    fetchCurrentTactic(session_id);
-                    // Disable toggle after start
-                    if(agentToggle) agentToggle.disabled = true;
+                    location.reload();
                 } else {
                     alert("Sessão já iniciada ou erro ao iniciar.");
                 }
             });
-    });
+        });
+    }
 
+    const endSessionBtn = document.getElementById("endSessionBtn");
+    if (endSessionBtn) {
+        endSessionBtn.addEventListener("click", () => {
+            if (confirm("Tem certeza que deseja encerrar a sessão?")) {
+                fetch(`/sessions/end/${session_id}`)
+                    .then(response => {
+                        if (response.ok) {
+                            location.reload();
+                        } else {
+                            alert("Erro ao encerrar a sessão.");
+                        }
+                    })
+                    .catch(() => alert("Erro ao tentar encerrar a sessão."));
+            }
+        });
+    }
 
-    document.getElementById("endSessionBtn").addEventListener("click", () => {
-        const confirmEnd = prompt("Tem certeza que deseja encerrar a sessão? Digite 'sim' para confirmar.");
-
-        if (confirmEnd && confirmEnd.trim().toLowerCase() === "sim") {
-            console.log("Encerrando a sessão");
-
-            fetch(`/sessions/end/${session_id}`)
-                .then(response => {
-                    if (response.ok) {
-                        console.log("Sessão encerrada com sucesso");
-                        location.reload(); // só recarrega após sucesso
-                    } else {
-                        alert("Erro ao encerrar a sessão.");
-                    }
-                })
-                .catch(err => {
-                    console.error("Erro na requisição:", err);
-                    alert("Erro ao tentar encerrar a sessão.");
-                });
-
-        } else {
-            alert("Encerramento cancelado.");
+    if (window.user_type === 'teacher') {
+        if (window.teacher_debate_chat_id !== null && window.teacher_debate_chat_id !== undefined) {
+            const debateSection = document.getElementById("teacher-debate-section");
+            if (debateSection) debateSection.classList.remove("d-none");
+            debateSicrono(window.teacher_debate_chat_id, "teacher_debate_chat");
         }
-    });
+        if (window.teacher_apresentacao_link) {
+            const apresentacaoSection = document.getElementById("teacher-apresentacao-section");
+            if (apresentacaoSection) apresentacaoSection.classList.remove("d-none");
+        }
+    }
 
-
-    // Adiciona listeners para os botões de avançar e retroceder
-    const prevBtn = document.getElementById("prevTacticBtn");
-    if(prevBtn){
-        prevBtn.addEventListener("click", () => {
-             fetch(`/sessions/${session_id}/prev_tactic`, { method: 'POST' })
-             .then(response => {
-                if(response.ok) {
+    // ===== ALUNO =====
+    const studentStartBtn = document.getElementById("studentStartBtn");
+    if (studentStartBtn) {
+        studentStartBtn.addEventListener("click", () => {
+            studentStartBtn.disabled = true;
+            fetch(`/sessions/${session_id}/student_start`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Authorization': `Bearer ${token}`
+                }
+            }).then(response => {
+                if (response.ok) {
+                    showStudentTacticArea();
                     fetchCurrentTactic(session_id);
                 } else {
-                    console.error("Erro ao retroceder tática");
+                    studentStartBtn.disabled = false;
+                    alert("Erro ao iniciar a sessão. Tente novamente.");
                 }
-             });
+            }).catch(() => {
+                studentStartBtn.disabled = false;
+                alert("Erro ao iniciar a sessão. Tente novamente.");
+            });
         });
     }
 
-    function showThinking() {
-        const thinkingDiv = document.getElementById("agentThinking");
-        if(thinkingDiv) {
-            thinkingDiv.classList.remove("d-none");
-        }
-
-        const reasoningContainer = document.getElementById("agentReasoningContainer");
-        if(reasoningContainer) reasoningContainer.innerHTML = "";
-
-        // Clear saved reasoning when starting new thought process
-        sessionStorage.removeItem("latestReasoning_" + session_id);
+    if (window.user_type === 'student') {
+        fetchCurrentTactic(session_id);
+        setInterval(() => fetchCurrentTactic(session_id), 5000);
     }
-
-    function hideThinking() {
-        const thinkingDiv = document.getElementById("agentThinking");
-        if(thinkingDiv) thinkingDiv.classList.add("d-none");
-    }
-
-    function showReasoning(agent_decision) {
-        if (agent_decision && agent_decision.reasoning) {
-            const container = document.getElementById("agentReasoningContainer");
-            if (container) {
-                // Novo HTML estruturado
-                container.innerHTML = `
-                    <div class="agent-reasoning-card">
-                        <div class="reasoning-header">
-                            <i class="bi bi-lightbulb-fill text-warning"></i>
-                            <span>Decisão do Agente de Estratégia</span>
-                        </div>
-                        <div class="reasoning-content">
-                            ${agent_decision.reasoning}
-                        </div>
-                        <div class="mt-2 text-end">
-                            <span class="badge bg-light text-dark border">Tática Escolhida: ${agent_decision.tactic_name || 'Automática'}</span>
-                        </div>
-                    </div>
-                `;
-            }
-        }
-    }
-
-    const nextBtn = document.getElementById("nextTacticBtn");
-    if(nextBtn){
-        nextBtn.addEventListener("click", () => {
-             // Mostra spinner se o agente estiver ativo (checamos a toggle se possível, ou sempre mostramos e escondemos rápido se não for)
-             // A toggle pode estar desabilitada mas checked.
-             const agentToggle = document.getElementById("agentToggle");
-
-             if (agentToggle && agentToggle.checked) {
-                 showThinking();
-             }
-
-             fetch(`/sessions/${session_id}/next_tactic`, { method: 'POST' })
-             .then(response => {
-                 hideThinking();
-                 if(response.ok) {
-                    response.json().then(data => {
-                        if (data.agent_decision) {
-                            showReasoning(data.agent_decision);
-                            sessionStorage.setItem("latestReasoning_" + session_id, JSON.stringify(data.agent_decision));
-                        }
-                        fetchCurrentTactic(session_id);
-                    });
-                 } else {
-                     console.error("Erro ao avançar tática");
-                 }
-             })
-             .catch(err => {
-                 hideThinking();
-                 console.error(err);
-             });
-        });
-    }
-
-    // Inicia o chat automaticamente se a sessão já estiver em andamento
-    function iniciarChat() {
-        let session_status = '';
-
-        fetch(`/sessions/status/${session_id}`)
-            .then(response => {
-                return response.json()
-            }).then(data => {
-                // console.log("Status da sessão: ", data);
-                if (data.status === 'in-progress') {
-                    // session_status = data.status;
-                    fetchCurrentTactic(session_id);
-                    // setInterval(() => fetchCurrentTactic(session_id), 15000);
-                }
-            })
-    }
-
-    // Always poll
-    setInterval(() => fetchCurrentTactic(session_id), 5000);
-
-    iniciarChat();
-
-    // fetchCurrentTactic(session_id);
-    // setInterval(() => fetchCurrentTactic(session_id), 15000);
 });
