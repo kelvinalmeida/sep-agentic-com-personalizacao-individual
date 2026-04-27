@@ -116,6 +116,7 @@ def ensure_student_progress_table(conn):
             cur.execute("ALTER TABLE student_session_progress ADD COLUMN IF NOT EXISTS tactic_started_at TIMESTAMP")
             # DEFAULT TRUE preserva sessões existentes como "já iniciadas"
             cur.execute("ALTER TABLE student_session_progress ADD COLUMN IF NOT EXISTS student_started BOOLEAN DEFAULT TRUE")
+            cur.execute("ALTER TABLE student_session_progress ADD COLUMN IF NOT EXISTS should_end_session BOOLEAN DEFAULT FALSE")
             conn.commit()
         except Exception as e:
             conn.rollback()
@@ -553,10 +554,10 @@ def student_start_own(session_id, student_id):
         ensure_student_progress_table(conn)
         with conn.cursor() as cur:
             cur.execute("""
-                INSERT INTO student_session_progress (session_id, student_id, current_tactic_index, tactic_started_at, student_started)
-                VALUES (%s, %s, 0, %s, TRUE)
+                INSERT INTO student_session_progress (session_id, student_id, current_tactic_index, tactic_started_at, student_started, should_end_session)
+                VALUES (%s, %s, 0, %s, TRUE, FALSE)
                 ON CONFLICT (session_id, student_id) DO UPDATE
-                SET current_tactic_index = 0, tactic_started_at = EXCLUDED.tactic_started_at, student_started = TRUE
+                SET current_tactic_index = 0, tactic_started_at = EXCLUDED.tactic_started_at, student_started = TRUE, should_end_session = FALSE
             """, (session_id, str(student_id), now))
             conn.commit()
     return jsonify({"success": True, "tactic_started_at": now.isoformat()}), 200
@@ -582,6 +583,39 @@ def get_student_tactic_index(session_id, student_id):
             return jsonify({"current_tactic_index": 0, "tactic_started_at": None, "student_started": False}), 200
 
 
+@session_bp.route('/sessions/<int:session_id>/student/<string:student_id>/set_tactic', methods=['POST'])
+def set_student_tactic(session_id, student_id):
+    data = request.get_json() or {}
+    new_index = data.get('tactic_index')
+    if new_index is None:
+        return jsonify({"error": "tactic_index is required"}), 400
+    now = datetime.utcnow()
+    with get_db_connection() as conn:
+        ensure_student_progress_table(conn)
+        with conn.cursor() as cur:
+            cur.execute("""
+                UPDATE student_session_progress
+                SET current_tactic_index = %s, tactic_started_at = %s, should_end_session = FALSE
+                WHERE session_id = %s AND student_id = %s
+            """, (new_index, now, session_id, str(student_id)))
+            conn.commit()
+    return jsonify({"success": True, "current_tactic_index": new_index}), 200
+
+
+@session_bp.route('/sessions/<int:session_id>/student/<string:student_id>/set_end_flag', methods=['POST'])
+def set_student_end_flag(session_id, student_id):
+    with get_db_connection() as conn:
+        ensure_student_progress_table(conn)
+        with conn.cursor() as cur:
+            cur.execute("""
+                UPDATE student_session_progress
+                SET should_end_session = TRUE
+                WHERE session_id = %s AND student_id = %s
+            """, (session_id, str(student_id)))
+            conn.commit()
+    return jsonify({"success": True}), 200
+
+
 @session_bp.route('/sessions/<int:session_id>/student/<string:student_id>/advance_tactic', methods=['POST'])
 def advance_student_tactic(session_id, student_id):
     now = datetime.utcnow()
@@ -589,16 +623,20 @@ def advance_student_tactic(session_id, student_id):
         ensure_student_progress_table(conn)
         with conn.cursor() as cur:
             cur.execute("""
-                SELECT current_tactic_index FROM student_session_progress
+                SELECT current_tactic_index, should_end_session FROM student_session_progress
                 WHERE session_id = %s AND student_id = %s
             """, (session_id, str(student_id)))
             row = cur.fetchone()
             if not row:
                 return jsonify({"error": "Progress not found"}), 404
-            new_index = row['current_tactic_index'] + 1
+            # Se a flag de encerramento estiver ativa, avança além de todas as táticas
+            if row.get('should_end_session'):
+                new_index = 9999
+            else:
+                new_index = row['current_tactic_index'] + 1
             cur.execute("""
                 UPDATE student_session_progress
-                SET current_tactic_index = %s, tactic_started_at = %s
+                SET current_tactic_index = %s, tactic_started_at = %s, should_end_session = FALSE
                 WHERE session_id = %s AND student_id = %s
             """, (new_index, now, session_id, str(student_id)))
             conn.commit()

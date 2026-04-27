@@ -554,7 +554,8 @@ document.addEventListener("DOMContentLoaded", () => {
                         console.log("Iniciando execução da Tática de Regras...");
                         fetch(`/sessions/${session_id}/execute_rules`, {
                             method: 'POST',
-                            headers: { 'Content-Type': 'application/json' }
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ student_id: my_id })
                         })
                         .then(response => {
                             if (!response.ok) throw new Error("Erro na execução da regra");
