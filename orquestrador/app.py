@@ -16,6 +16,7 @@ from routes.domain import domain_bp
 from routes.orchestrator.agente_strategies.agete_strategies_routes import agete_strategies_bp
 from routes.orchestrator.agente_user.agente_user_routes import agete_user_bp
 from routes.orchestrator.agente_control.agente_control_routes import agente_control_orch_bp
+from routes.orchestrator.agente_control.agente_wrong_answers_routes import agente_wrong_answers_bp
 
 app.register_blueprint(login_bp)
 app.register_blueprint(student_bp)
@@ -26,6 +27,7 @@ app.register_blueprint(domain_bp)
 app.register_blueprint(agete_strategies_bp)
 app.register_blueprint(agete_user_bp)
 app.register_blueprint(agente_control_orch_bp)
+app.register_blueprint(agente_wrong_answers_bp)
 
 if __name__ == '__main__':
     socketio.run(app, debug=True, host='0.0.0.0', port=5000)

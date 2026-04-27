@@ -406,13 +406,63 @@ document.addEventListener("DOMContentLoaded", () => {
 
                                             if (respData.passed) {
                                                 feedbackEl.className = "mt-2 text-success fw-bold";
-                                                // Atualiza a tática exibida após avançar
                                                 setTimeout(() => fetchCurrentTactic(session_id), 1500);
                                             } else {
                                                 feedbackEl.className = "mt-2 text-danger fw-bold";
-                                                // Reabilita o formulário para nova tentativa
-                                                form.reset();
-                                                if (submitBtn) submitBtn.disabled = false;
+
+                                                // Mostra spinner na aba PDF enquanto a IA gera o texto
+                                                const pdfContainer = document.getElementById("pdf_container");
+                                                if (pdfContainer) {
+                                                    pdfContainer.innerHTML = `
+                                                        <div class="text-center p-4">
+                                                            <div class="spinner-border text-warning" role="status"></div>
+                                                            <p class="mt-2 text-muted">Gerando material de revisão personalizado...</p>
+                                                        </div>
+                                                    `;
+                                                    const pdfTabBtn = document.getElementById("pdf-tab");
+                                                    if (pdfTabBtn) new bootstrap.Tab(pdfTabBtn).show();
+                                                }
+
+                                                fetch('/orchestrator/agent/generate_wrong_answers_text', {
+                                                    method: 'POST',
+                                                    headers: { 'Content-Type': 'application/json' },
+                                                    body: JSON.stringify({ student_id: studentId, session_id: session_id })
+                                                })
+                                                .then(r => r.json())
+                                                .then(aiData => {
+                                                    if (pdfContainer) {
+                                                        const card = document.createElement('div');
+                                                        card.className = 'card border-warning shadow-sm mb-3';
+
+                                                        const cardHeader = document.createElement('div');
+                                                        cardHeader.className = 'card-header bg-warning text-dark fw-bold';
+                                                        cardHeader.textContent = 'Material de Revisão Personalizado';
+
+                                                        const cardBody = document.createElement('div');
+                                                        cardBody.className = 'card-body';
+
+                                                        const hint = document.createElement('p');
+                                                        hint.className = 'text-muted small mb-3';
+                                                        hint.textContent = 'Leia este material antes de tentar novamente.';
+
+                                                        const textDiv = document.createElement('div');
+                                                        textDiv.style.cssText = 'white-space: pre-wrap; line-height: 1.8;';
+                                                        textDiv.textContent = aiData.study_text || 'Não foi possível gerar o material. Tente novamente.';
+
+                                                        cardBody.appendChild(hint);
+                                                        cardBody.appendChild(textDiv);
+                                                        card.appendChild(cardHeader);
+                                                        card.appendChild(cardBody);
+                                                        pdfContainer.innerHTML = '';
+                                                        pdfContainer.appendChild(card);
+                                                    }
+                                                    form.reset();
+                                                    if (submitBtn) submitBtn.disabled = false;
+                                                })
+                                                .catch(() => {
+                                                    form.reset();
+                                                    if (submitBtn) submitBtn.disabled = false;
+                                                });
                                             }
                                         })
                                         .catch(function(err) {
