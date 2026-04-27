@@ -103,7 +103,9 @@ document.addEventListener("DOMContentLoaded", () => {
 
     function startCountdown(remainingTime, strategyTactics, tacticName) {
         clearInterval(countdownInterval);
-        let timeLeft = remainingTime;
+        // Reuso: se o tempo já expirou ao recarregar a página, garante pelo menos
+        // 1 tick no branch "else" para que a UI de abas seja construída antes de parar.
+        let timeLeft = (remainingTime <= 0 && tacticName === "Reuso") ? 1 : remainingTime;
 
         // Resetar estado de ativação a cada nova tática
         taticaAtiva = false;
@@ -269,34 +271,59 @@ document.addEventListener("DOMContentLoaded", () => {
                         const pdfs = JSON.parse(pdfData);
 
                         const pdfContainer = document.getElementById("pdf_container");
+                        const _studyTextKey = `reuso_study_text_${session_id}_${my_id}`;
+                        const _savedStudyText = localStorage.getItem(_studyTextKey);
 
-                        pdfs.forEach(pdf => {
-                            fetch(`/pdfs/${pdf.id}`, {
-                                headers: {
-                                    "Authorization": `Bearer ${token}`
-                                }
-                            })
-                                .then(response => {
-                                    if (!response.ok) {
-                                        throw new Error("Erro ao baixar PDF");
+                        if (_savedStudyText) {
+                            // Restaura o texto gerado pela IA em tentativa anterior
+                            const _card = document.createElement('div');
+                            _card.className = 'card border-warning shadow-sm mb-3';
+                            const _cardHeader = document.createElement('div');
+                            _cardHeader.className = 'card-header bg-warning text-dark fw-bold';
+                            _cardHeader.textContent = 'Material de Revisão Personalizado';
+                            const _cardBody = document.createElement('div');
+                            _cardBody.className = 'card-body';
+                            const _hint = document.createElement('p');
+                            _hint.className = 'text-muted small mb-3';
+                            _hint.textContent = 'Leia este material antes de tentar novamente.';
+                            const _textDiv = document.createElement('div');
+                            _textDiv.style.cssText = 'white-space: pre-wrap; line-height: 1.8;';
+                            _textDiv.textContent = _savedStudyText;
+                            _cardBody.appendChild(_hint);
+                            _cardBody.appendChild(_textDiv);
+                            _card.appendChild(_cardHeader);
+                            _card.appendChild(_cardBody);
+                            pdfContainer.innerHTML = '';
+                            pdfContainer.appendChild(_card);
+                        } else {
+                            pdfs.forEach(pdf => {
+                                fetch(`/pdfs/${pdf.id}`, {
+                                    headers: {
+                                        "Authorization": `Bearer ${token}`
                                     }
-                                    return response.blob();
                                 })
-                                .then(blob => {
-                                    const url = URL.createObjectURL(blob);
-                                    const embed = document.createElement("embed");
-                                    embed.src = url;
-                                    embed.type = "application/pdf";
-                                    embed.width = "100%";
-                                    embed.height = "600px";
-                                    embed.className = "mb-3";
+                                    .then(response => {
+                                        if (!response.ok) {
+                                            throw new Error("Erro ao baixar PDF");
+                                        }
+                                        return response.blob();
+                                    })
+                                    .then(blob => {
+                                        const url = URL.createObjectURL(blob);
+                                        const embed = document.createElement("embed");
+                                        embed.src = url;
+                                        embed.type = "application/pdf";
+                                        embed.width = "100%";
+                                        embed.height = "600px";
+                                        embed.className = "mb-3";
 
-                                    pdfContainer.appendChild(embed);
-                                })
-                                .catch(error => {
-                                    console.error("Erro ao carregar PDF: ", error);
-                                });
-                        });
+                                        pdfContainer.appendChild(embed);
+                                    })
+                                    .catch(error => {
+                                        console.error("Erro ao carregar PDF: ", error);
+                                    });
+                            });
+                        }
 
                         // ----------Carregar Exercícios----------
                         fetch(`/domains/${domain_id}/exercises`, {
@@ -344,6 +371,34 @@ document.addEventListener("DOMContentLoaded", () => {
 
                                 container.innerHTML = ""; // Limpa qualquer conteúdo anterior
                                 container.appendChild(form); // Insere o formulário
+
+                                // Restaura countdown do botão se ainda estiver ativo após reload
+                                const _cooldownKey = `reuso_cooldown_end_${session_id}_${my_id}`;
+                                const _cooldownEnd = parseInt(localStorage.getItem(_cooldownKey) || '0');
+                                if (_cooldownEnd > Date.now()) {
+                                    const _restoreBtn = form.querySelector('button[type="submit"]');
+                                    if (_restoreBtn) {
+                                        _restoreBtn.disabled = true;
+                                        let _secsLeft = Math.ceil((_cooldownEnd - Date.now()) / 1000);
+                                        const _updateRestoreBtn = () => {
+                                            const m = Math.floor(_secsLeft / 60);
+                                            const s = _secsLeft % 60;
+                                            _restoreBtn.textContent = `Aguarde ${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')} para tentar novamente`;
+                                        };
+                                        _updateRestoreBtn();
+                                        const _restoreTimer = setInterval(() => {
+                                            _secsLeft--;
+                                            if (_secsLeft <= 0) {
+                                                clearInterval(_restoreTimer);
+                                                _restoreBtn.disabled = false;
+                                                _restoreBtn.textContent = 'Enviar respostas';
+                                                localStorage.removeItem(_cooldownKey);
+                                            } else {
+                                                _updateRestoreBtn();
+                                            }
+                                        }, 1000);
+                                    }
+                                }
 
                                 // Adiciona o event listener de envio DEPOIS de inserir no DOM
                                 form.addEventListener("submit", function (e) {
@@ -406,11 +461,72 @@ document.addEventListener("DOMContentLoaded", () => {
 
                                             if (respData.passed) {
                                                 feedbackEl.className = "mt-2 text-success fw-bold";
+                                                // Limpa dados persistidos ao passar nos exercícios
+                                                localStorage.removeItem(`reuso_cooldown_end_${session_id}_${my_id}`);
+                                                localStorage.removeItem(`reuso_study_text_${session_id}_${my_id}`);
                                                 setTimeout(() => fetchCurrentTactic(session_id), 1500);
                                             } else {
                                                 feedbackEl.className = "mt-2 text-danger fw-bold";
 
-                                                // Mostra spinner na aba PDF enquanto a IA gera o texto
+                                                // --- Desabilita o botão por 3 minutos com countdown ---
+                                                if (submitBtn) {
+                                                    submitBtn.disabled = true;
+                                                    const cooldownEndTime = Date.now() + 180 * 1000;
+                                                    localStorage.setItem(`reuso_cooldown_end_${session_id}_${my_id}`, cooldownEndTime.toString());
+                                                    let secondsLeft = 180;
+                                                    const updateBtn = () => {
+                                                        const mins = Math.floor(secondsLeft / 60);
+                                                        const secs = secondsLeft % 60;
+                                                        submitBtn.textContent = `Aguarde ${String(mins).padStart(2,'0')}:${String(secs).padStart(2,'0')} para tentar novamente`;
+                                                    };
+                                                    updateBtn();
+                                                    const btnCountdown = setInterval(() => {
+                                                        secondsLeft--;
+                                                        if (secondsLeft <= 0) {
+                                                            clearInterval(btnCountdown);
+                                                            submitBtn.disabled = false;
+                                                            submitBtn.textContent = 'Enviar respostas';
+                                                            localStorage.removeItem(`reuso_cooldown_end_${session_id}_${my_id}`);
+                                                        } else {
+                                                            updateBtn();
+                                                        }
+                                                    }, 1000);
+                                                }
+
+                                                // --- Modal informativo ---
+                                                const existingModal = document.getElementById('wrongAnswersModal');
+                                                if (existingModal) existingModal.remove();
+
+                                                const modalEl = document.createElement('div');
+                                                modalEl.id = 'wrongAnswersModal';
+                                                modalEl.className = 'modal fade';
+                                                modalEl.setAttribute('tabindex', '-1');
+                                                modalEl.innerHTML = `
+                                                    <div class="modal-dialog modal-dialog-centered">
+                                                        <div class="modal-content border-warning">
+                                                            <div class="modal-header bg-warning text-dark">
+                                                                <h5 class="modal-title fw-bold">Resultado dos Exercícios</h5>
+                                                                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                                                            </div>
+                                                            <div class="modal-body">
+                                                                <p class="fw-semibold">${feedbackEl.textContent}</p>
+                                                                <hr>
+                                                                <p id="modal-ai-status" class="mb-0">
+                                                                    <span class="spinner-border spinner-border-sm text-warning me-2" role="status"></span>
+                                                                    Gerando material de revisão personalizado com foco nos seus erros...
+                                                                </p>
+                                                            </div>
+                                                            <div class="modal-footer">
+                                                                <button type="button" class="btn btn-warning" data-bs-dismiss="modal">Fechar e Revisar</button>
+                                                            </div>
+                                                        </div>
+                                                    </div>
+                                                `;
+                                                document.body.appendChild(modalEl);
+                                                const bsModal = new bootstrap.Modal(modalEl);
+                                                bsModal.show();
+
+                                                // --- Spinner na aba PDF ---
                                                 const pdfContainer = document.getElementById("pdf_container");
                                                 if (pdfContainer) {
                                                     pdfContainer.innerHTML = `
@@ -430,6 +546,20 @@ document.addEventListener("DOMContentLoaded", () => {
                                                 })
                                                 .then(r => r.json())
                                                 .then(aiData => {
+                                                    // Persiste o texto gerado para sobreviver a reloads
+                                                    if (aiData.study_text) {
+                                                        localStorage.setItem(`reuso_study_text_${session_id}_${my_id}`, aiData.study_text);
+                                                    }
+
+                                                    // Atualiza o modal com confirmação
+                                                    const modalStatus = document.getElementById('modal-ai-status');
+                                                    if (modalStatus) {
+                                                        modalStatus.innerHTML = `
+                                                            <span class="text-success fw-bold">Material gerado com sucesso!</span>
+                                                            Acesse a aba <strong>PDFs</strong> para ler o conteúdo personalizado focado nas suas dificuldades.
+                                                        `;
+                                                    }
+
                                                     if (pdfContainer) {
                                                         const card = document.createElement('div');
                                                         card.className = 'card border-warning shadow-sm mb-3';
@@ -457,11 +587,13 @@ document.addEventListener("DOMContentLoaded", () => {
                                                         pdfContainer.appendChild(card);
                                                     }
                                                     form.reset();
-                                                    if (submitBtn) submitBtn.disabled = false;
                                                 })
                                                 .catch(() => {
+                                                    const modalStatus = document.getElementById('modal-ai-status');
+                                                    if (modalStatus) {
+                                                        modalStatus.textContent = 'Não foi possível gerar o material automaticamente. Revise o conteúdo e tente novamente.';
+                                                    }
                                                     form.reset();
-                                                    if (submitBtn) submitBtn.disabled = false;
                                                 });
                                             }
                                         })
@@ -745,6 +877,9 @@ document.addEventListener("DOMContentLoaded", () => {
                 }
 
                 if (data.session_status === 'not_started') {
+                    // Sessão iniciada/reiniciada pelo professor: limpa material e timer do Reuso
+                    localStorage.removeItem(`reuso_study_text_${session_id}_${my_id}`);
+                    localStorage.removeItem(`reuso_cooldown_end_${session_id}_${my_id}`);
                     activeTacticIndex = null;
                     showStudentStartArea();
                     const btn = document.getElementById("studentStartBtn");
