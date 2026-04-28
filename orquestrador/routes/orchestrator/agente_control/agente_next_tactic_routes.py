@@ -95,29 +95,48 @@ def adaptive_next_tactic():
                 "reasoning": "Parabéns! Você completou todas as táticas desta sessão."
             }), 200
 
-        # 5. Perfil individual do aluno
+        # 5. Perfil individual do aluno (dados brutos, sem LLM)
         student_profile = "Perfil não disponível."
         try:
-            user_resp = requests.post(
-                f"{USER_URL}/agent/summarize_logged_user",
-                json={"user_id": student_id},
-                timeout=30
+            user_resp = requests.get(
+                f"{USER_URL}/students/{student_id}/preferences",
+                timeout=10
             )
             if user_resp.status_code == 200:
-                student_profile = user_resp.json().get('summary', '')
+                d = user_resp.json()
+                email_txt = "aceita e-mail" if d.get('pref_receive_email') else "não aceita e-mail"
+                student_profile = (
+                    f"Nome: {d.get('name') or 'N/A'}. "
+                    f"Curso: {d.get('course') or 'N/A'}. "
+                    f"Idade: {d.get('age') or 'N/A'}. "
+                    f"Conteúdo preferido: {d.get('pref_content_type') or 'N/A'}. "
+                    f"Comunicação preferida: {d.get('pref_communication') or 'N/A'}. "
+                    f"{email_txt.capitalize()}."
+                )
         except Exception as e:
             logging.warning("Erro ao buscar perfil do aluno student_id=%s: %s", student_id, e)
 
-        # 6. Perfil da turma
+        # 6. Perfil da turma (dados brutos, sem LLM)
         class_profile = "Perfil da turma desconhecido."
         try:
             class_resp = requests.post(
-                f"{USER_URL}/students/summarize_preferences",
+                f"{USER_URL}/students/batch_preferences",
                 json={"student_ids": student_ids},
                 timeout=10
             )
             if class_resp.status_code == 200:
-                class_profile = str(class_resp.json().get('summary', ''))
+                students_raw = class_resp.json().get('students', [])
+                if students_raw:
+                    lines = []
+                    for s in students_raw:
+                        s_email = "aceita e-mail" if s.get('pref_receive_email') else "não aceita e-mail"
+                        lines.append(
+                            f"- {s.get('name') or 'Aluno'}: "
+                            f"conteúdo '{s.get('pref_content_type') or 'N/A'}', "
+                            f"comunicação '{s.get('pref_communication') or 'N/A'}', "
+                            f"{s_email}."
+                        )
+                    class_profile = "\n".join(lines)
         except Exception as e:
             logging.warning("Erro ao buscar perfil da turma: %s", e)
 

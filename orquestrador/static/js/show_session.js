@@ -136,14 +136,19 @@ document.addEventListener("DOMContentLoaded", () => {
         hideAdaptiveReasoning();
     }
 
+    function randomDelay(maxMs) {
+        return new Promise(resolve => setTimeout(resolve, Math.random() * maxMs));
+    }
+
     function advanceStudentTactic() {
         if (adaptiveTacticEnabled) {
             showAdaptiveLoadingState();
-            return fetch('/orchestrator/agent/adaptive_next_tactic', {
+            return randomDelay(3000)
+            .then(() => fetch('/orchestrator/agent/adaptive_next_tactic', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ student_id: my_id, session_id: session_id })
-            })
+            }))
             .then(r => r.json())
             .then(aiData => {
                 if (aiData.reasoning) {
@@ -527,12 +532,15 @@ document.addEventListener("DOMContentLoaded", () => {
                                                 localStorage.removeItem(`reuso_study_text_${session_id}_${my_id}`);
                                                 if (adaptiveTacticEnabled) {
                                                     showAdaptiveLoadingState();
-                                                    // activeTacticIndex é o índice da tática que o aluno ACABOU de concluir
-                                                    fetch('/orchestrator/agent/adaptive_next_tactic', {
+                                                    // activeTacticIndex é o índice da tática que o aluno ACABOU de concluir.
+                                                    // Delay aleatório 0-3s para escalonar chamadas simultâneas.
+                                                    const _completedIdx = activeTacticIndex;
+                                                    randomDelay(3000)
+                                                    .then(() => fetch('/orchestrator/agent/adaptive_next_tactic', {
                                                         method: 'POST',
                                                         headers: { 'Content-Type': 'application/json' },
-                                                        body: JSON.stringify({ student_id: my_id, session_id: session_id, completed_tactic_index: activeTacticIndex })
-                                                    })
+                                                        body: JSON.stringify({ student_id: my_id, session_id: session_id, completed_tactic_index: _completedIdx })
+                                                    }))
                                                     .then(r => r.json())
                                                     .then(aiData => {
                                                         if (aiData.reasoning) {
@@ -1142,13 +1150,15 @@ document.addEventListener("DOMContentLoaded", () => {
                 if (response.ok) {
                     showStudentTacticArea();
                     if (adaptiveTacticEnabled) {
-                        // IA escolhe qual tática iniciar (mesmo a primeira)
+                        // IA escolhe qual tática iniciar (mesmo a primeira).
+                        // Delay aleatório 0-3s para escalonar chamadas de múltiplos alunos simultâneos.
                         showAdaptiveLoadingState();
-                        fetch('/orchestrator/agent/adaptive_next_tactic', {
+                        randomDelay(3000)
+                        .then(() => fetch('/orchestrator/agent/adaptive_next_tactic', {
                             method: 'POST',
                             headers: { 'Content-Type': 'application/json' },
                             body: JSON.stringify({ student_id: my_id, session_id: session_id, is_first: true })
-                        })
+                        }))
                         .then(r => r.json())
                         .then(aiData => {
                             if (aiData.reasoning) {

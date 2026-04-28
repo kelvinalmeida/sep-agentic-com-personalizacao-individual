@@ -210,6 +210,58 @@ def delete_student(student_id):
     #     return jsonify({"message": "Aluno deletado!"})
     # return jsonify({"error": "Aluno não encontrado"}), 404
 
+
+@student_bp.route("/students/<int:student_id>/preferences", methods=["GET"])
+def get_student_preferences(student_id):
+    """Retorna dados brutos de preferências do aluno sem chamar LLM."""
+    conn = create_connection(current_app.config['SQLALCHEMY_DATABASE_URI'])
+    if conn is None:
+        return jsonify({"error": "Database connection failed"}), 503
+    cursor = conn.cursor()
+    try:
+        cursor.execute("""
+            SELECT name, course, age, pref_content_type, pref_communication, pref_receive_email
+            FROM student WHERE student_id = %s
+        """, (student_id,))
+        row = cursor.fetchone()
+        if not row:
+            return jsonify({"error": "Aluno não encontrado"}), 404
+        return jsonify(dict(row)), 200
+    except Exception as e:
+        conn.rollback()
+        return jsonify({"error": str(e)}), 400
+    finally:
+        cursor.close()
+        conn.close()
+
+
+@student_bp.route('/students/batch_preferences', methods=['POST'])
+def batch_preferences():
+    """Retorna dados brutos de preferências para uma lista de alunos sem chamar LLM."""
+    data = request.get_json() or {}
+    student_ids = data.get('student_ids', [])
+    if not student_ids:
+        return jsonify({"students": []}), 200
+    conn = create_connection(current_app.config['SQLALCHEMY_DATABASE_URI'])
+    if conn is None:
+        return jsonify({"error": "Database connection failed"}), 503
+    cursor = conn.cursor()
+    try:
+        clean_ids = [int(x) for x in student_ids]
+        cursor.execute("""
+            SELECT name, pref_content_type, pref_communication, pref_receive_email
+            FROM student WHERE student_id = ANY(%s)
+        """, (clean_ids,))
+        rows = cursor.fetchall()
+        return jsonify({"students": [dict(r) for r in rows]}), 200
+    except Exception as e:
+        conn.rollback()
+        return jsonify({"error": str(e)}), 400
+    finally:
+        cursor.close()
+        conn.close()
+
+
 @student_bp.route('/students/ids_to_usernames', methods=['GET'])
 def ids_to_names():
     # 1. Pegar os IDs da URL
