@@ -227,6 +227,31 @@
                     <button id="endSessionBtn" class="btn btn-outline-danger btn-lg px-4 py-3">Encerrar Sessão</button>
                 </div>
 
+                <!-- Tática Adaptativa por IA -->
+                <div class="text-center mb-4">
+                    <div class="ai-wrapper" style="{% if session.status == 'in-progress' %}opacity:0.6;{% endif %}">
+                        <span class="ai-label">
+                            <div class="ai-icon-bg">🧠</div>
+                            Tática Adaptativa por IA
+                        </span>
+                        <div class="form-check form-switch mb-0">
+                            <input class="form-check-input ai-switch" type="checkbox" role="switch"
+                                id="adaptiveTacticSwitch"
+                                {% if session.adaptive_tactic_enabled %}checked{% endif %}
+                                {% if session.status == 'in-progress' %}disabled{% endif %}>
+                        </div>
+                    </div>
+                    <p class="text-muted small mt-1" id="adaptive-tactic-status">
+                        {% if session.status == 'in-progress' %}
+                            Bloqueado durante sessão em andamento.
+                        {% elif session.adaptive_tactic_enabled %}
+                            Ativado: a IA escolhe a próxima tática para cada aluno.
+                        {% else %}
+                            Desativado: alunos seguem a ordem normal das táticas.
+                        {% endif %}
+                    </p>
+                </div>
+
                 <!-- Chat — Debate Síncrono (sempre visível se existir na estratégia) -->
                 <div id="teacher-debate-section" class="mt-4 mb-4 d-none">
                     <h5 class="text-primary fw-bold"><i class="bi bi-chat-dots-fill me-2"></i>Chat — Debate Síncrono</h5>
@@ -262,6 +287,16 @@
                 </div>
 
                 <div id="student-tactic-area" style="display:none">
+                    <div id="adaptive-reasoning-banner" class="d-none alert border-0 mb-3"
+                        style="background: linear-gradient(135deg,#4facfe22,#00f2fe22); border-left: 4px solid #4facfe !important;">
+                        <div class="d-flex align-items-start gap-2">
+                            <span style="font-size:1.4rem;">🧠</span>
+                            <div>
+                                <strong class="text-primary">Personalização por IA</strong>
+                                <p class="mb-0 text-muted small" id="adaptive-reasoning-text"></p>
+                            </div>
+                        </div>
+                    </div>
                     <h5 id="tacticName" class="text-primary fw-bold mt-2 display-6">Aguardando início...</h5>
                     <div class="d-flex justify-content-center align-items-center gap-3 my-4">
                         <div id="tacticTimer" class="badge bg-dark rounded shadow border border-secondary" style="min-width: 180px;">--</div>

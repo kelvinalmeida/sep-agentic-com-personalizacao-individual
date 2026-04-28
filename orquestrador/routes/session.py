@@ -482,8 +482,14 @@ def get_current_tactic(session_id):
 
     session_json = session_response.json()
 
+    adaptive_tactic_enabled = session_json.get('adaptive_tactic_enabled', False)
+
     if session_json['status'] != 'in-progress':
-        return jsonify({'message': 'Session not started or finished', 'session_status': session_json['status']}), 200
+        return jsonify({
+            'message': 'Session not started or finished',
+            'session_status': session_json['status'],
+            'adaptive_tactic_enabled': adaptive_tactic_enabled
+        }), 200
 
     # Índice e timer de tática: individual por aluno, ou global para professor
     student_tactic_started_at = None
@@ -492,7 +498,7 @@ def get_current_tactic(session_id):
         if progress_res.status_code == 200:
             prog = progress_res.json()
             if not prog.get("student_started", True):
-                return jsonify({'session_status': 'not_started'})
+                return jsonify({'session_status': 'not_started', 'adaptive_tactic_enabled': adaptive_tactic_enabled})
             current_tactic_index = prog.get("current_tactic_index", 0)
             student_tactic_started_at = prog.get("tactic_started_at")
         else:
@@ -585,8 +591,29 @@ def get_current_tactic(session_id):
         'strategy_tactics': tactics,
         'session_status': session_json['status'],
         'current_tactic_index': current_tactic_index,
-        'strategy_id': current_strategy_id
+        'strategy_id': current_strategy_id,
+        'adaptive_tactic_enabled': session_json.get('adaptive_tactic_enabled', False)
     })
+
+
+@session_bp.route('/sessions/<int:session_id>/set_adaptive_tactic', methods=['POST'])
+@token_required
+def set_adaptive_tactic(session_id, current_user=None):
+    if current_user and current_user.get('type') != 'teacher':
+        return jsonify({"error": "Unauthorized"}), 403
+    data = request.get_json() or {}
+    try:
+        resp = requests.post(
+            f"{CONTROL_URL}/sessions/{session_id}/set_adaptive_tactic",
+            json=data,
+            timeout=10
+        )
+        try:
+            return jsonify(resp.json()), resp.status_code
+        except Exception:
+            return resp.text, resp.status_code
+    except RequestException as e:
+        return jsonify({"error": str(e)}), 503
 
 
 @session_bp.route('/sessions/<int:session_id>/change_strategy', methods=['POST'])

@@ -1,6 +1,7 @@
 document.addEventListener("DOMContentLoaded", () => {
     let countdownInterval = null;
     let taticaAtiva = false;
+    let adaptiveTacticEnabled = false;
 
     let debateSicrono_isActive = false;
     let apresentacaoSicrona_isActive = false;
@@ -101,8 +102,70 @@ document.addEventListener("DOMContentLoaded", () => {
     }
 
 
+    function showAdaptiveReasoning(reasoning) {
+        const banner = document.getElementById("adaptive-reasoning-banner");
+        const text = document.getElementById("adaptive-reasoning-text");
+        if (banner && text && reasoning) {
+            text.textContent = reasoning;
+            banner.classList.remove("d-none");
+        }
+    }
+
+    function hideAdaptiveReasoning() {
+        const banner = document.getElementById("adaptive-reasoning-banner");
+        if (banner) banner.classList.add("d-none");
+    }
+
+    function showAdaptiveLoadingState() {
+        clearInterval(countdownInterval);
+        const timerEl = document.getElementById("tacticTimer");
+        if (timerEl) timerEl.innerText = "...";
+        const nameEl = document.getElementById("tacticName");
+        if (nameEl) nameEl.innerText = "Personalizando...";
+        const tacticArea = document.getElementById("tatic_here");
+        if (tacticArea) {
+            tacticArea.innerHTML = `
+                <div class="text-center py-5">
+                    <div class="spinner-border text-primary" style="width:3rem;height:3rem;" role="status">
+                        <span class="visually-hidden">Carregando...</span>
+                    </div>
+                    <p class="mt-3 fw-bold text-primary">🧠 A IA está personalizando seu ensino...</p>
+                    <p class="text-muted small">Analisando seu perfil e desempenho para escolher a melhor próxima atividade.</p>
+                </div>`;
+        }
+        hideAdaptiveReasoning();
+    }
+
+    function advanceStudentTactic() {
+        if (adaptiveTacticEnabled) {
+            showAdaptiveLoadingState();
+            return fetch('/orchestrator/agent/adaptive_next_tactic', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ student_id: my_id, session_id: session_id })
+            })
+            .then(r => r.json())
+            .then(aiData => {
+                if (aiData.reasoning) {
+                    localStorage.setItem(`adaptive_reasoning_${session_id}_${my_id}`, aiData.reasoning);
+                }
+                activeTacticIndex = null;
+                fetchCurrentTactic(session_id);
+            })
+            .catch(() => { activeTacticIndex = null; fetchCurrentTactic(session_id); });
+        } else {
+            return fetch(`/sessions/${session_id}/student_advance_tactic`, { method: 'POST' })
+                .then(() => { activeTacticIndex = null; fetchCurrentTactic(session_id); })
+                .catch(() => fetchCurrentTactic(session_id));
+        }
+    }
+
     function startCountdown(remainingTime, strategyTactics, tacticName) {
         clearInterval(countdownInterval);
+        // Limpa qualquer estado de loading (spinner da IA) antes de montar a nova tática
+        const tacticHereEl = document.getElementById("tatic_here");
+        if (tacticHereEl) tacticHereEl.innerHTML = '';
+
         // Reuso: se o tempo já expirou ao recarregar a página, garante pelo menos
         // 1 tick no branch "else" para que a UI de abas seja construída antes de parar.
         let timeLeft = (remainingTime <= 0 && tacticName === "Reuso") ? 1 : remainingTime;
@@ -136,9 +199,7 @@ document.addEventListener("DOMContentLoaded", () => {
                 }
 
                 // Avança automaticamente para a próxima tática
-                fetch(`/sessions/${session_id}/student_advance_tactic`, { method: 'POST' })
-                    .then(() => { activeTacticIndex = null; fetchCurrentTactic(session_id); })
-                    .catch(() => fetchCurrentTactic(session_id));
+                advanceStudentTactic();
             } else {
                 let minutes = Math.floor(timeLeft / 60);
                 let seconds = timeLeft % 60;
@@ -464,7 +525,26 @@ document.addEventListener("DOMContentLoaded", () => {
                                                 // Limpa dados persistidos ao passar nos exercícios
                                                 localStorage.removeItem(`reuso_cooldown_end_${session_id}_${my_id}`);
                                                 localStorage.removeItem(`reuso_study_text_${session_id}_${my_id}`);
-                                                setTimeout(() => fetchCurrentTactic(session_id), 1500);
+                                                if (adaptiveTacticEnabled) {
+                                                    showAdaptiveLoadingState();
+                                                    // activeTacticIndex é o índice da tática que o aluno ACABOU de concluir
+                                                    fetch('/orchestrator/agent/adaptive_next_tactic', {
+                                                        method: 'POST',
+                                                        headers: { 'Content-Type': 'application/json' },
+                                                        body: JSON.stringify({ student_id: my_id, session_id: session_id, completed_tactic_index: activeTacticIndex })
+                                                    })
+                                                    .then(r => r.json())
+                                                    .then(aiData => {
+                                                        if (aiData.reasoning) {
+                                                            localStorage.setItem(`adaptive_reasoning_${session_id}_${my_id}`, aiData.reasoning);
+                                                        }
+                                                        activeTacticIndex = null;
+                                                        setTimeout(() => fetchCurrentTactic(session_id), 500);
+                                                    })
+                                                    .catch(() => { activeTacticIndex = null; setTimeout(() => fetchCurrentTactic(session_id), 1500); });
+                                                } else {
+                                                    setTimeout(() => fetchCurrentTactic(session_id), 1500);
+                                                }
                                             } else {
                                                 feedbackEl.className = "mt-2 text-danger fw-bold";
 
@@ -870,6 +950,8 @@ document.addEventListener("DOMContentLoaded", () => {
             .then(data => {
                 console.log("Dados da tática atual: ", data);
 
+                adaptiveTacticEnabled = data.adaptive_tactic_enabled || false;
+
                 if (data.strategy_id && window.current_strategy_id && data.strategy_id != window.current_strategy_id) {
                     console.log("Strategy changed, reloading page...");
                     location.reload();
@@ -880,6 +962,8 @@ document.addEventListener("DOMContentLoaded", () => {
                     // Sessão iniciada/reiniciada pelo professor: limpa material e timer do Reuso
                     localStorage.removeItem(`reuso_study_text_${session_id}_${my_id}`);
                     localStorage.removeItem(`reuso_cooldown_end_${session_id}_${my_id}`);
+                    localStorage.removeItem(`adaptive_reasoning_${session_id}_${my_id}`);
+                    hideAdaptiveReasoning();
                     activeTacticIndex = null;
                     showStudentStartArea();
                     const btn = document.getElementById("studentStartBtn");
@@ -909,6 +993,19 @@ document.addEventListener("DOMContentLoaded", () => {
                     taticDescription(data.tactic.description || "Nenhuma descrição disponível");
                     if (data.current_tactic_index !== activeTacticIndex) {
                         activeTacticIndex = data.current_tactic_index;
+
+                        // Exibe o raciocínio da IA se existir no localStorage
+                        if (adaptiveTacticEnabled) {
+                            const storedReasoning = localStorage.getItem(`adaptive_reasoning_${session_id}_${my_id}`);
+                            if (storedReasoning) {
+                                showAdaptiveReasoning(storedReasoning);
+                                localStorage.removeItem(`adaptive_reasoning_${session_id}_${my_id}`);
+                            } else {
+                                hideAdaptiveReasoning();
+                            }
+                        } else {
+                            hideAdaptiveReasoning();
+                        }
 
                         const tacticNameLower = data.tactic.name.trim().toLowerCase();
                         const isMudancaEstrategia =
@@ -1044,7 +1141,26 @@ document.addEventListener("DOMContentLoaded", () => {
             }).then(response => {
                 if (response.ok) {
                     showStudentTacticArea();
-                    fetchCurrentTactic(session_id);
+                    if (adaptiveTacticEnabled) {
+                        // IA escolhe qual tática iniciar (mesmo a primeira)
+                        showAdaptiveLoadingState();
+                        fetch('/orchestrator/agent/adaptive_next_tactic', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ student_id: my_id, session_id: session_id, is_first: true })
+                        })
+                        .then(r => r.json())
+                        .then(aiData => {
+                            if (aiData.reasoning) {
+                                localStorage.setItem(`adaptive_reasoning_${session_id}_${my_id}`, aiData.reasoning);
+                            }
+                            activeTacticIndex = null;
+                            fetchCurrentTactic(session_id);
+                        })
+                        .catch(() => { activeTacticIndex = null; fetchCurrentTactic(session_id); });
+                    } else {
+                        fetchCurrentTactic(session_id);
+                    }
                 } else {
                     studentStartBtn.disabled = false;
                     alert("Erro ao iniciar a sessão. Tente novamente.");
@@ -1059,5 +1175,28 @@ document.addEventListener("DOMContentLoaded", () => {
     if (window.user_type === 'student') {
         fetchCurrentTactic(session_id);
         setInterval(() => fetchCurrentTactic(session_id), 5000);
+    }
+
+    const adaptiveTacticSwitch = document.getElementById("adaptiveTacticSwitch");
+    if (adaptiveTacticSwitch) {
+        adaptiveTacticSwitch.addEventListener("change", function () {
+            const enabled = this.checked;
+            fetch(`/sessions/${session_id}/set_adaptive_tactic`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ enabled: enabled })
+            })
+            .then(r => r.json())
+            .then(() => {
+                adaptiveTacticEnabled = enabled;
+                const statusEl = document.getElementById("adaptive-tactic-status");
+                if (statusEl) {
+                    statusEl.textContent = enabled
+                        ? "Ativado: a IA escolhe a próxima tática para cada aluno."
+                        : "Desativado: alunos seguem a ordem normal das táticas.";
+                }
+            })
+            .catch(err => console.error("Erro ao atualizar tática adaptativa:", err));
+        });
     }
 });
