@@ -84,6 +84,7 @@ def get_session_details(conn, session_id):
         # We handle defaults just in case
         session_dict['rating_average'] = session.get('rating_average', 0.0)
         session_dict['rating_count'] = session.get('rating_count', 0)
+        session_dict['adaptive_tactic_enabled'] = session.get('adaptive_tactic_enabled', False)
 
         try:
             session_dict['executed_indices'] = json.loads(session.get('executed_indices', '[]'))
@@ -100,6 +101,7 @@ def get_session_details(conn, session_id):
         return session_dict
 
 def ensure_student_progress_table(conn):
+    # Create table
     with conn.cursor() as cur:
         try:
             cur.execute("""
@@ -112,15 +114,27 @@ def ensure_student_progress_table(conn):
                         FOREIGN KEY (session_id) REFERENCES session (id) ON DELETE CASCADE
                 )
             """)
-            cur.execute("ALTER TABLE verified_answers ADD COLUMN IF NOT EXISTS tactic_index INTEGER NOT NULL DEFAULT 0")
-            cur.execute("ALTER TABLE student_session_progress ADD COLUMN IF NOT EXISTS tactic_started_at TIMESTAMP")
-            # DEFAULT TRUE preserva sessões existentes como "já iniciadas"
-            cur.execute("ALTER TABLE student_session_progress ADD COLUMN IF NOT EXISTS student_started BOOLEAN DEFAULT TRUE")
-            cur.execute("ALTER TABLE student_session_progress ADD COLUMN IF NOT EXISTS should_end_session BOOLEAN DEFAULT FALSE")
             conn.commit()
         except Exception as e:
             conn.rollback()
-            logging.warning(f"Note on ensure_student_progress_table: {e}")
+            logging.warning(f"Note on create student_session_progress: {e}")
+
+    # Each migration is independent so a pre-existing column never blocks newer ones
+    _run_migration(conn, "ALTER TABLE verified_answers ADD COLUMN IF NOT EXISTS tactic_index INTEGER NOT NULL DEFAULT 0")
+    _run_migration(conn, "ALTER TABLE student_session_progress ADD COLUMN IF NOT EXISTS tactic_started_at TIMESTAMP")
+    _run_migration(conn, "ALTER TABLE student_session_progress ADD COLUMN IF NOT EXISTS student_started BOOLEAN DEFAULT TRUE")
+    _run_migration(conn, "ALTER TABLE student_session_progress ADD COLUMN IF NOT EXISTS should_end_session BOOLEAN DEFAULT FALSE")
+    _run_migration(conn, "ALTER TABLE student_session_progress ADD COLUMN IF NOT EXISTS executed_tactic_indices TEXT DEFAULT '[]'")
+
+
+def _run_migration(conn, sql):
+    with conn.cursor() as cur:
+        try:
+            cur.execute(sql)
+            conn.commit()
+        except Exception as e:
+            conn.rollback()
+            logging.warning(f"Migration note ({sql[:60]}...): {e}")
 
 def ensure_end_flag_column(conn):
     with conn.cursor() as cur:
@@ -139,6 +153,15 @@ def ensure_executed_indices_column(conn):
         except Exception as e:
             conn.rollback()
             logging.warning(f"Note on ensure_executed_indices_column: {e}")
+
+def ensure_adaptive_tactic_column(conn):
+    with conn.cursor() as cur:
+        try:
+            cur.execute("ALTER TABLE session ADD COLUMN IF NOT EXISTS adaptive_tactic_enabled BOOLEAN DEFAULT FALSE")
+            conn.commit()
+        except Exception as e:
+            conn.rollback()
+            logging.warning(f"Note on ensure_adaptive_tactic_column: {e}")
 
 def update_executed_indices(conn, session_id):
     with conn.cursor() as cur:
@@ -250,6 +273,7 @@ def list_sessions():
 def get_session_by_id(session_id):
     with get_db_connection() as conn:
         ensure_rating_tables(conn)
+        ensure_adaptive_tactic_column(conn)
         session_dict = get_session_details(conn, session_id)
 
     if session_dict:
@@ -291,6 +315,7 @@ def start_session(session_id):
     with get_db_connection() as conn:
         ensure_end_flag_column(conn)
         ensure_executed_indices_column(conn)
+        ensure_adaptive_tactic_column(conn)
         ensure_student_progress_table(conn)
         with conn.cursor() as cur:
             cur.execute("SELECT id FROM session WHERE id = %s", (session_id,))
@@ -310,10 +335,10 @@ def start_session(session_id):
             cur.execute("SELECT student_id FROM session_students WHERE session_id = %s", (session_id,))
             for row in cur.fetchall():
                 cur.execute("""
-                    INSERT INTO student_session_progress (session_id, student_id, current_tactic_index, tactic_started_at, student_started)
-                    VALUES (%s, %s, 0, NULL, FALSE)
+                    INSERT INTO student_session_progress (session_id, student_id, current_tactic_index, tactic_started_at, student_started, executed_tactic_indices)
+                    VALUES (%s, %s, 0, NULL, FALSE, '[]')
                     ON CONFLICT (session_id, student_id) DO UPDATE
-                    SET current_tactic_index = 0, tactic_started_at = NULL, student_started = FALSE
+                    SET current_tactic_index = 0, tactic_started_at = NULL, student_started = FALSE, executed_tactic_indices = '[]'
                 """, (session_id, row['student_id']))
 
             conn.commit()
@@ -554,10 +579,11 @@ def student_start_own(session_id, student_id):
         ensure_student_progress_table(conn)
         with conn.cursor() as cur:
             cur.execute("""
-                INSERT INTO student_session_progress (session_id, student_id, current_tactic_index, tactic_started_at, student_started, should_end_session)
-                VALUES (%s, %s, 0, %s, TRUE, FALSE)
+                INSERT INTO student_session_progress (session_id, student_id, current_tactic_index, tactic_started_at, student_started, should_end_session, executed_tactic_indices)
+                VALUES (%s, %s, 0, %s, TRUE, FALSE, '[]')
                 ON CONFLICT (session_id, student_id) DO UPDATE
-                SET current_tactic_index = 0, tactic_started_at = EXCLUDED.tactic_started_at, student_started = TRUE, should_end_session = FALSE
+                SET current_tactic_index = 0, tactic_started_at = EXCLUDED.tactic_started_at,
+                    student_started = TRUE, should_end_session = FALSE, executed_tactic_indices = '[]'
             """, (session_id, str(student_id), now))
             conn.commit()
     return jsonify({"success": True, "tactic_started_at": now.isoformat()}), 200
@@ -569,18 +595,24 @@ def get_student_tactic_index(session_id, student_id):
         ensure_student_progress_table(conn)
         with conn.cursor() as cur:
             cur.execute("""
-                SELECT current_tactic_index, tactic_started_at, student_started FROM student_session_progress
+                SELECT current_tactic_index, tactic_started_at, student_started, executed_tactic_indices
+                FROM student_session_progress
                 WHERE session_id = %s AND student_id = %s
             """, (session_id, str(student_id)))
             row = cur.fetchone()
             if row:
+                try:
+                    executed = json.loads(row['executed_tactic_indices'] or '[]')
+                except Exception:
+                    executed = []
                 return jsonify({
                     "current_tactic_index": row['current_tactic_index'],
                     "tactic_started_at": row['tactic_started_at'].isoformat() if row['tactic_started_at'] else None,
-                    "student_started": bool(row['student_started'])
+                    "student_started": bool(row['student_started']),
+                    "executed_tactic_indices": executed
                 }), 200
             # Sem registro: aluno ainda não entrou na sessão
-            return jsonify({"current_tactic_index": 0, "tactic_started_at": None, "student_started": False}), 200
+            return jsonify({"current_tactic_index": 0, "tactic_started_at": None, "student_started": False, "executed_tactic_indices": []}), 200
 
 
 @session_bp.route('/sessions/<int:session_id>/student/<string:student_id>/set_tactic', methods=['POST'])
@@ -589,15 +621,24 @@ def set_student_tactic(session_id, student_id):
     new_index = data.get('tactic_index')
     if new_index is None:
         return jsonify({"error": "tactic_index is required"}), 400
+    executed_indices = data.get('executed_tactic_indices')
     now = datetime.utcnow()
     with get_db_connection() as conn:
         ensure_student_progress_table(conn)
         with conn.cursor() as cur:
-            cur.execute("""
-                UPDATE student_session_progress
-                SET current_tactic_index = %s, tactic_started_at = %s, should_end_session = FALSE
-                WHERE session_id = %s AND student_id = %s
-            """, (new_index, now, session_id, str(student_id)))
+            if executed_indices is not None:
+                cur.execute("""
+                    UPDATE student_session_progress
+                    SET current_tactic_index = %s, tactic_started_at = %s, should_end_session = FALSE,
+                        executed_tactic_indices = %s
+                    WHERE session_id = %s AND student_id = %s
+                """, (new_index, now, json.dumps(executed_indices), session_id, str(student_id)))
+            else:
+                cur.execute("""
+                    UPDATE student_session_progress
+                    SET current_tactic_index = %s, tactic_started_at = %s, should_end_session = FALSE
+                    WHERE session_id = %s AND student_id = %s
+                """, (new_index, now, session_id, str(student_id)))
             conn.commit()
     return jsonify({"success": True, "current_tactic_index": new_index}), 200
 
@@ -641,6 +682,21 @@ def advance_student_tactic(session_id, student_id):
             """, (new_index, now, session_id, str(student_id)))
             conn.commit()
     return jsonify({"success": True, "current_tactic_index": new_index}), 200
+
+
+@session_bp.route('/sessions/<int:session_id>/set_adaptive_tactic', methods=['POST'])
+def set_adaptive_tactic(session_id):
+    data = request.get_json() or {}
+    enabled = bool(data.get('enabled', False))
+    with get_db_connection() as conn:
+        ensure_adaptive_tactic_column(conn)
+        with conn.cursor() as cur:
+            cur.execute(
+                "UPDATE session SET adaptive_tactic_enabled = %s WHERE id = %s",
+                (enabled, session_id)
+            )
+            conn.commit()
+    return jsonify({"success": True, "adaptive_tactic_enabled": enabled}), 200
 
 
 @session_bp.route('/sessions/<int:session_id>/students/progress', methods=['GET'])
