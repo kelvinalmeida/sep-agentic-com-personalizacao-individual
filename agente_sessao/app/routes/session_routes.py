@@ -125,6 +125,8 @@ def ensure_student_progress_table(conn):
     _run_migration(conn, "ALTER TABLE student_session_progress ADD COLUMN IF NOT EXISTS student_started BOOLEAN DEFAULT TRUE")
     _run_migration(conn, "ALTER TABLE student_session_progress ADD COLUMN IF NOT EXISTS should_end_session BOOLEAN DEFAULT FALSE")
     _run_migration(conn, "ALTER TABLE student_session_progress ADD COLUMN IF NOT EXISTS executed_tactic_indices TEXT DEFAULT '[]'")
+    # Unique constraint needed for ON CONFLICT (student_id, session_id, tactic_index) in submit_answer
+    _run_migration(conn, "ALTER TABLE verified_answers ADD CONSTRAINT uq_verified_answers_student_session_tactic UNIQUE (student_id, session_id, tactic_index)")
 
 
 def _run_migration(conn, sql):
