@@ -443,6 +443,329 @@ def clear_chat_history():
         if conn: conn.close()
 
 
+def ensure_learning_history_table(conn):
+    with conn.cursor() as cur:
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS student_learning_history (
+                id SERIAL PRIMARY KEY,
+                student_id INTEGER NOT NULL,
+                session_id INTEGER NOT NULL,
+                summary TEXT NOT NULL,
+                scores_raw TEXT DEFAULT '',
+                tactics_names TEXT DEFAULT '',
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+        """)
+        conn.commit()
+
+
+@agente_user_bp.route('/agent/save_session_memory', methods=['POST'])
+def save_session_memory():
+    """Gera resumo da sessão com LLM e salva no histórico persistente do aluno."""
+    data = request.get_json() or {}
+    student_id = data.get('student_id')
+    session_id = data.get('session_id')
+    scores = data.get('scores', [])
+    tactics_names = data.get('tactics_names', [])
+
+    if student_id is None or session_id is None:
+        return jsonify({"error": "student_id e session_id são obrigatórios"}), 400
+
+    conn = None
+    try:
+        db_url = getattr(Config, 'SQLALCHEMY_DATABASE_URI', os.getenv('DATABASE_URL'))
+        conn = create_connection(db_url)
+        if not conn:
+            return jsonify({"error": "Falha na conexão com o banco"}), 500
+
+        ensure_learning_history_table(conn)
+
+        student_name = str(student_id)
+        with conn.cursor() as cur:
+            cur.execute("SELECT name FROM student WHERE student_id = %s", (student_id,))
+            row = cur.fetchone()
+            if row:
+                student_name = row['name'] or str(student_id)
+
+        avg_score = round(sum(scores) / len(scores), 1) if scores else 0
+        scores_text = f"Notas: {scores}. Média: {avg_score}." if scores else "Sem exercícios avaliados."
+        tactics_text = ", ".join(tactics_names) if tactics_names else "Nenhuma tática registrada."
+
+        prompt = f"""Você é um tutor pedagógico. Analise o desempenho do aluno {student_name} nesta sessão:
+
+Táticas realizadas: {tactics_text}
+Desempenho nos exercícios: {scores_text}
+
+Escreva um resumo em português com EXATAMENTE 2-3 frases curtas que:
+1. Identifique os pontos fortes e fracos do aluno nesta sessão
+2. Indique quais táticas funcionaram bem ou mal para este aluno
+3. Sugira uma abordagem para a próxima sessão
+
+Sem markdown, sem títulos, apenas texto corrido."""
+
+        client = OpenAI(
+            api_key=Config.GROQ_API_KEY,
+            base_url="https://api.groq.com/openai/v1"
+        )
+        response = client.chat.completions.create(
+            model="llama-3.3-70b-versatile",
+            messages=[
+                {"role": "system", "content": "Você resume sessões de ensino de forma objetiva e pedagógica."},
+                {"role": "user", "content": prompt}
+            ],
+            temperature=0.3,
+            max_tokens=200
+        )
+        summary = (response.choices[0].message.content or "").strip()
+
+        with conn.cursor() as cur:
+            cur.execute("""
+                INSERT INTO student_learning_history
+                    (student_id, session_id, summary, scores_raw, tactics_names)
+                VALUES (%s, %s, %s, %s, %s)
+            """, (int(student_id), int(session_id), summary, str(scores), tactics_text))
+            conn.commit()
+
+        return jsonify({"status": "saved", "summary": summary}), 200
+
+    except Exception as e:
+        logging.error("Erro ao salvar memória de sessão: %s", str(e))
+        if conn:
+            conn.rollback()
+        return jsonify({"error": str(e)}), 500
+    finally:
+        if conn:
+            conn.close()
+
+
+@agente_user_bp.route('/students/<int:student_id>/learning_history', methods=['GET'])
+def get_learning_history(student_id):
+    """Retorna as últimas sessões resumidas do aluno (memória persistente)."""
+    limit = int(request.args.get('limit', 3))
+    conn = None
+    try:
+        db_url = getattr(Config, 'SQLALCHEMY_DATABASE_URI', os.getenv('DATABASE_URL'))
+        conn = create_connection(db_url)
+        if not conn:
+            return jsonify({"error": "Falha na conexão com o banco"}), 500
+
+        ensure_learning_history_table(conn)
+
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT session_id, summary, created_at
+                FROM student_learning_history
+                WHERE student_id = %s
+                ORDER BY created_at DESC
+                LIMIT %s
+            """, (student_id, limit))
+            rows = cur.fetchall()
+
+        history = [
+            {
+                "session_id": r['session_id'],
+                "summary": r['summary'],
+                "created_at": r['created_at'].isoformat() if r['created_at'] else None
+            }
+            for r in rows
+        ]
+        return jsonify({"history": history}), 200
+
+    except Exception as e:
+        logging.error("Erro ao buscar histórico: %s", str(e))
+        return jsonify({"error": str(e)}), 500
+    finally:
+        if conn:
+            conn.close()
+
+
+def ensure_mastery_table(conn):
+    with conn.cursor() as cur:
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS student_mastery (
+                id SERIAL PRIMARY KEY,
+                student_id INTEGER NOT NULL,
+                session_id INTEGER NOT NULL DEFAULT 0,
+                concept TEXT NOT NULL,
+                mastery_pct FLOAT DEFAULT 0,
+                total_attempts INTEGER DEFAULT 0,
+                last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE (student_id, session_id, concept)
+            );
+        """)
+        # Migração: adiciona session_id e corrige constraint em tabelas existentes
+        cur.execute("""
+            ALTER TABLE student_mastery
+            ADD COLUMN IF NOT EXISTS session_id INTEGER NOT NULL DEFAULT 0;
+        """)
+        cur.execute("""
+            DO $$ BEGIN
+                IF EXISTS (
+                    SELECT 1 FROM pg_constraint
+                    WHERE conname = 'student_mastery_student_id_concept_key'
+                    AND conrelid = 'student_mastery'::regclass
+                ) THEN
+                    ALTER TABLE student_mastery
+                    DROP CONSTRAINT student_mastery_student_id_concept_key;
+                END IF;
+            END $$;
+        """)
+        cur.execute("""
+            DO $$ BEGIN
+                IF NOT EXISTS (
+                    SELECT 1 FROM pg_constraint
+                    WHERE conname = 'student_mastery_student_id_session_id_concept_key'
+                    AND conrelid = 'student_mastery'::regclass
+                ) THEN
+                    ALTER TABLE student_mastery
+                    ADD CONSTRAINT student_mastery_student_id_session_id_concept_key
+                    UNIQUE (student_id, session_id, concept);
+                END IF;
+            END $$;
+        """)
+        conn.commit()
+
+
+@agente_user_bp.route('/students/<int:student_id>/mastery_update', methods=['POST'])
+def mastery_update(student_id):
+    """Atualiza maestria por conceito (por sessão) usando EMA (60% antigo + 40% novo)."""
+    data = request.get_json() or {}
+    concepts = data.get('concepts', [])
+    session_id = int(data.get('session_id', 0))
+
+    if not concepts:
+        return jsonify({"status": "nothing to update"}), 200
+
+    conn = None
+    try:
+        db_url = getattr(Config, 'SQLALCHEMY_DATABASE_URI', os.getenv('DATABASE_URL'))
+        conn = create_connection(db_url)
+        if not conn:
+            return jsonify({"error": "Falha na conexão com o banco"}), 500
+
+        ensure_mastery_table(conn)
+
+        with conn.cursor() as cur:
+            for c in concepts:
+                concept = str(c.get('concept', '')).strip().lower()
+                correct = int(c.get('correct_count', 0))
+                total = int(c.get('total_count', 1))
+                if not concept or total == 0:
+                    continue
+                new_pct = (correct / total) * 100
+                cur.execute("""
+                    INSERT INTO student_mastery (student_id, session_id, concept, mastery_pct, total_attempts)
+                    VALUES (%s, %s, %s, %s, 1)
+                    ON CONFLICT (student_id, session_id, concept) DO UPDATE SET
+                        mastery_pct = 0.6 * student_mastery.mastery_pct + 0.4 * EXCLUDED.mastery_pct,
+                        total_attempts = student_mastery.total_attempts + 1,
+                        last_updated = CURRENT_TIMESTAMP
+                """, (student_id, session_id, concept, new_pct))
+            conn.commit()
+
+        return jsonify({"status": "updated", "concepts_count": len(concepts)}), 200
+
+    except Exception as e:
+        logging.error("Erro ao atualizar maestria: %s", str(e))
+        if conn:
+            conn.rollback()
+        return jsonify({"error": str(e)}), 500
+    finally:
+        if conn:
+            conn.close()
+
+
+@agente_user_bp.route('/students/<int:student_id>/mastery', methods=['GET'])
+def get_mastery(student_id):
+    """Retorna maestria por conceito do aluno para uma sessão específica."""
+    session_id = request.args.get('session_id')
+    if session_id is None:
+        return jsonify({"mastery": []}), 200
+    session_id = int(session_id)
+
+    conn = None
+    try:
+        db_url = getattr(Config, 'SQLALCHEMY_DATABASE_URI', os.getenv('DATABASE_URL'))
+        conn = create_connection(db_url)
+        if not conn:
+            return jsonify({"error": "Falha na conexão com o banco"}), 500
+
+        ensure_mastery_table(conn)
+
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT concept, mastery_pct, total_attempts, last_updated
+                FROM student_mastery
+                WHERE student_id = %s AND session_id = %s
+                ORDER BY mastery_pct ASC
+            """, (student_id, session_id))
+            rows = cur.fetchall()
+
+        mastery = [
+            {
+                "concept": r['concept'],
+                "mastery_pct": round(r['mastery_pct'], 1),
+                "total_attempts": r['total_attempts'],
+                "last_updated": r['last_updated'].isoformat() if r['last_updated'] else None
+            }
+            for r in rows
+        ]
+        return jsonify({"mastery": mastery}), 200
+
+    except Exception as e:
+        logging.error("Erro ao buscar maestria: %s", str(e))
+        return jsonify({"error": str(e)}), 500
+    finally:
+        if conn:
+            conn.close()
+
+
+@agente_user_bp.route('/students/<int:student_id>/difficulty_note', methods=['POST'])
+def save_difficulty_note(student_id):
+    """Registra uma nota de dificuldade no histórico persistente do aluno (sem LLM)."""
+    data = request.get_json() or {}
+    session_id = data.get('session_id')
+    attempt_number = int(data.get('attempt_number', 1))
+    wrong_questions_summary = data.get('wrong_questions_summary', 'questões não especificadas')
+
+    if session_id is None:
+        return jsonify({"error": "session_id é obrigatório"}), 400
+
+    conn = None
+    try:
+        db_url = getattr(Config, 'SQLALCHEMY_DATABASE_URI', os.getenv('DATABASE_URL'))
+        conn = create_connection(db_url)
+        if not conn:
+            return jsonify({"error": "Falha na conexão com o banco"}), 500
+
+        ensure_learning_history_table(conn)
+
+        summary = (
+            f"[DIFICULDADE - Tentativa {attempt_number}] "
+            f"Teve dificuldade na tática Reuso. "
+            f"Questões com erro: {wrong_questions_summary}."
+        )
+
+        with conn.cursor() as cur:
+            cur.execute("""
+                INSERT INTO student_learning_history
+                    (student_id, session_id, summary, scores_raw, tactics_names)
+                VALUES (%s, %s, %s, %s, %s)
+            """, (student_id, int(session_id), summary, '', 'Reuso'))
+            conn.commit()
+
+        return jsonify({"status": "saved"}), 200
+
+    except Exception as e:
+        logging.error("Erro ao salvar nota de dificuldade: %s", str(e))
+        if conn:
+            conn.rollback()
+        return jsonify({"error": str(e)}), 500
+    finally:
+        if conn:
+            conn.close()
+
+
 @agente_user_bp.route('/agent/help_student', methods=['POST'])
 def help_student_agent():
     """

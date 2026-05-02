@@ -14,6 +14,11 @@ def adaptive_next_tactic():
     Orquestrador da Tática Adaptativa (por aluno).
     Agrega: perfil individual, perfil da turma, notas de exercício, táticas feitas/restantes,
     últimas 5 mensagens do aluno no chat — e pede à IA que escolha a melhor próxima tática.
+
+    Histórico de sessões anteriores do aluno (memória persistente)
+
+    Maestria por conceito (objetivo de longo prazo)
+
     Nunca repete táticas; quando todas são concluídas, encerra a sessão do aluno.
     """
     data = request.get_json() or {}
@@ -193,6 +198,38 @@ def adaptive_next_tactic():
             for i in remaining_indices
         ]
 
+        # 10.5. Histórico de sessões anteriores do aluno (memória persistente)
+        student_history = ""
+        try:
+            hist_resp = requests.get(
+                f"{USER_URL}/students/{student_id}/learning_history",
+                params={"limit": 3},
+                timeout=10
+            )
+            if hist_resp.status_code == 200:
+                history_entries = hist_resp.json().get('history', [])
+                if history_entries:
+                    lines = [f"- Sessão {h['session_id']}: {h['summary']}" for h in history_entries]
+                    student_history = "\n".join(lines)
+        except Exception as e:
+            logging.warning("Erro ao buscar histórico student_id=%s: %s", student_id, e)
+
+        # 10.6. Maestria por conceito desta sessão
+        student_mastery_text = ""
+        try:
+            mastery_resp = requests.get(
+                f"{USER_URL}/students/{student_id}/mastery",
+                params={"session_id": session_id},
+                timeout=10
+            )
+            if mastery_resp.status_code == 200:
+                mastery_list = mastery_resp.json().get('mastery', [])
+                if mastery_list:
+                    lines = [f"- {m['concept']}: {m['mastery_pct']}%" for m in mastery_list]
+                    student_mastery_text = "\n".join(lines)
+        except Exception as e:
+            logging.warning("Erro ao buscar maestria student_id=%s: %s", student_id, e)
+
         # 11. Consulta à IA para decidir a próxima tática
         ai_payload = {
             "student_profile": student_profile,
@@ -200,8 +237,12 @@ def adaptive_next_tactic():
             "exercise_scores": exercise_scores,
             "remaining_tactics": remaining_tactics,
             "executed_tactic_indices": executed_tactic_indices,
-            "chat_messages": last_5_messages
+            "chat_messages": last_5_messages,
+            "student_history": student_history,
+            "student_mastery": student_mastery_text
         }
+
+        # return jsonify({"debug_payload": ai_payload}), 200  # DEBUG: retorna o payload para a IA sem chamar a IA
 
         logging.info("Payload enviado para IA: %s", ai_payload)
 

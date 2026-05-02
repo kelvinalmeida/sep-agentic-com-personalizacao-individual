@@ -56,6 +56,7 @@ def generate_wrong_answers_text():
     data = request.get_json() or {}
     student_id = data.get('student_id')
     session_id = data.get('session_id')
+    attempt_number = int(data.get('attempt_number', 1))
 
     if student_id is None or session_id is None:
         return jsonify({"error": "student_id e session_id são obrigatórios"}), 400
@@ -98,25 +99,51 @@ def generate_wrong_answers_text():
             if isinstance(line, str) and 'ERROU' in line
         ]
 
-        # 4. Perfil individual do aluno
+        # 4. Perfil individual do aluno (sem LLM — leitura direta do banco)
         profile_summary = ""
         try:
-            user_resp = requests.post(
-                f"{USER_URL}/agent/summarize_logged_user",
-                json={"user_id": student_id},
-                timeout=30
+            user_resp = requests.get(
+                f"{USER_URL}/students/{student_id}/preferences",
+                timeout=10
             )
             if user_resp.status_code == 200:
-                profile_summary = user_resp.json().get('summary', '')
+                d = user_resp.json()
+                email_txt = "aceita e-mail" if d.get('pref_receive_email') else "não aceita e-mail"
+                profile_summary = (
+                    f"Nome: {d.get('name') or 'N/A'}. "
+                    f"Curso: {d.get('course') or 'N/A'}. "
+                    f"Idade: {d.get('age') or 'N/A'}. "
+                    f"Conteúdo preferido: {d.get('pref_content_type') or 'N/A'}. "
+                    f"Comunicação preferida: {d.get('pref_communication') or 'N/A'}. "
+                    f"{email_txt.capitalize()}."
+                )
         except Exception as e:
-            logging.warning("Erro ao buscar perfil do aluno student_id=%s: %s", student_id, e)
+            logging.warning("Erro ao buscar perfil student_id=%s: %s", student_id, e)
 
-        # 5. Gerar texto educativo via agente de estratégia
+        # 5. Histórico de sessões anteriores (memória persistente)
+        student_history = ""
+        try:
+            hist_resp = requests.get(
+                f"{USER_URL}/students/{student_id}/learning_history",
+                params={"limit": 3},
+                timeout=10
+            )
+            if hist_resp.status_code == 200:
+                history_entries = hist_resp.json().get('history', [])
+                if history_entries:
+                    lines = [f"- Sessão {h['session_id']}: {h['summary']}" for h in history_entries]
+                    student_history = "\n".join(lines)
+        except Exception as e:
+            logging.warning("Erro ao buscar histórico student_id=%s: %s", student_id, e)
+
+        # 6. Gerar texto educativo via agente de estratégia
         strategies_resp = requests.post(
             f"{STRATEGIES_URL}/agent/generate_wrong_answers_study_text",
             json={
                 "wrong_questions": wrong_questions,
-                "profile_summary": profile_summary
+                "profile_summary": profile_summary,
+                "student_history": student_history,
+                "attempt_number": attempt_number
             },
             timeout=60
         )
@@ -127,6 +154,21 @@ def generate_wrong_answers_text():
             }), strategies_resp.status_code
 
         result = strategies_resp.json()
+
+        # 7. Registrar dificuldade no histórico persistente (fire-and-forget)
+        try:
+            questions_summary = "; ".join(wrong_questions[:3]) if wrong_questions else "questões não identificadas"
+            requests.post(
+                f"{USER_URL}/students/{student_id}/difficulty_note",
+                json={
+                    "session_id": session_id,
+                    "attempt_number": attempt_number,
+                    "wrong_questions_summary": questions_summary
+                },
+                timeout=5
+            )
+        except Exception:
+            pass
 
         return jsonify({
             "student_id": student_id,

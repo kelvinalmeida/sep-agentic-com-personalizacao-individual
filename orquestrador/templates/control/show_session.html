@@ -303,6 +303,7 @@
                     </div>
                     <div id="current_tatic_description" class="alert alert-light border shadow-sm text-muted fst-italic mt-3" role="alert"></div>
                     <div id="tatic_here" class="mt-4"></div>
+                    <div id="mastery-panel" class="mt-4" style="display:none;"></div>
                     {% if session.domains %}
                     <div id="pdf_data" data-pdfs='{{ session.domains[0].pdfs | tojson | safe }}'></div>
                     {% else %}
