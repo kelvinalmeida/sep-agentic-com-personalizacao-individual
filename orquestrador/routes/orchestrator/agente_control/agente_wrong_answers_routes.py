@@ -65,39 +65,58 @@ def generate_wrong_answers_text():
         # 1. Contexto dos exercícios para enriquecer o resumo de dificuldade
         exercise_context_by_id = _build_exercise_context(session_id)
 
-        # 2. Resumo de dificuldade com detalhe das questões erradas
-        difficulty_resp = requests.post(
-            f"{CONTROL_URL}/agent/student_session_difficulty_summary",
-            json={
-                "student_id": student_id,
-                "session_id": session_id,
-                "exercise_context_by_id": exercise_context_by_id
-            },
-            timeout=60
-        )
-        if difficulty_resp.status_code != 200:
-            return jsonify({
-                "error": "Falha ao obter resumo de dificuldades",
-                "details": difficulty_resp.text
-            }), difficulty_resp.status_code
+        # 2. Resumo de dificuldade + montagem de wrong_questions
+        wrong_questions = []
+        wrong_count = 0
 
-        difficulty_data = difficulty_resp.json()
-        wrong_count = difficulty_data.get('wrong_count', 0)
+        if attempt_number == 0:
+            # Caso proativo: aluno pediu exemplo extra sem ter errado nada ainda.
+            # Usa os enunciados dos exercícios do domínio como tópico de contexto.
+            wrong_questions = [
+                ex.get('question', '')
+                for ex in exercise_context_by_id.values()
+                if ex.get('question')
+            ][:5]
+        else:
+            difficulty_resp = requests.post(
+                f"{CONTROL_URL}/agent/student_session_difficulty_summary",
+                json={
+                    "student_id": student_id,
+                    "session_id": session_id,
+                    "exercise_context_by_id": exercise_context_by_id
+                },
+                timeout=60
+            )
 
-        if wrong_count == 0:
-            return jsonify({
-                "student_id": student_id,
-                "session_id": session_id,
-                "wrong_count": 0,
-                "study_text": "Parabéns! O aluno não errou nenhuma questão nesta sessão."
-            }), 200
+            if difficulty_resp.status_code == 404:
+                # Aluno ainda não respondeu nenhum exercício — mesma lógica proativa
+                wrong_questions = [
+                    ex.get('question', '')
+                    for ex in exercise_context_by_id.values()
+                    if ex.get('question')
+                ][:5]
+            elif difficulty_resp.status_code != 200:
+                return jsonify({
+                    "error": "Falha ao obter resumo de dificuldades",
+                    "details": difficulty_resp.text
+                }), difficulty_resp.status_code
+            else:
+                difficulty_data = difficulty_resp.json()
+                wrong_count = difficulty_data.get('wrong_count', 0)
 
-        # 3. Filtrar questões erradas e remover a resposta correta das linhas
-        wrong_questions = [
-            _strip_correct_answer(line)
-            for line in difficulty_data.get('questions_summary', [])
-            if isinstance(line, str) and 'ERROU' in line
-        ]
+                if wrong_count == 0:
+                    return jsonify({
+                        "student_id": student_id,
+                        "session_id": session_id,
+                        "wrong_count": 0,
+                        "study_text": "Parabéns! O aluno não errou nenhuma questão nesta sessão."
+                    }), 200
+
+                wrong_questions = [
+                    _strip_correct_answer(line)
+                    for line in difficulty_data.get('questions_summary', [])
+                    if isinstance(line, str) and 'ERROU' in line
+                ]
 
         # 4. Perfil individual do aluno (sem LLM — leitura direta do banco)
         profile_summary = ""

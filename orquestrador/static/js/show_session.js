@@ -11,6 +11,8 @@ document.addEventListener("DOMContentLoaded", () => {
     let current_tatic_description = 'Nenhuma tática ativa no momento.';
     let activeTacticIndex = null;
     let reusoExercisesState = null; // null=desconhecido, true=tem exercícios, false=sem exercícios
+    let _proactiveTimer = null;
+    let _proactiveShown = false;
 
     const session_id = window.session_id;
     const token = window.token;
@@ -205,6 +207,90 @@ document.addEventListener("DOMContentLoaded", () => {
             </div>`;
     }
 
+    function _clearProactiveTimer() {
+        if (_proactiveTimer) { clearTimeout(_proactiveTimer); _proactiveTimer = null; }
+        _proactiveShown = false;
+        const existing = document.getElementById('proactive-card');
+        if (existing) existing.remove();
+    }
+
+    function _startProactiveTimer() {
+        _clearProactiveTimer();
+        _proactiveTimer = setTimeout(() => {
+            if (_proactiveShown) return;
+            _proactiveShown = true;
+
+            const pdfContainer = document.getElementById('pdf_container');
+            if (!pdfContainer) return;
+
+            const card = document.createElement('div');
+            card.id = 'proactive-card';
+            card.className = 'card border-primary shadow-sm mb-3';
+            card.innerHTML = `
+                <div class="card-header bg-primary text-white fw-bold d-flex justify-content-between align-items-center">
+                    <span>🤖 Posso te ajudar?</span>
+                    <button type="button" class="btn-close btn-close-white btn-sm" id="proactive-dismiss"></button>
+                </div>
+                <div class="card-body">
+                    <p class="mb-2">Notei que você está estudando este material há alguns minutos. Está conseguindo entender o conteúdo?</p>
+                    <p class="text-muted small mb-3">💡 Lembre-se: o PDF estará disponível para download ao final da sessão.</p>
+                    <div class="d-flex gap-2 flex-wrap">
+                        <button class="btn btn-outline-primary btn-sm" id="proactive-ok">✅ Estou entendendo bem</button>
+                        <button class="btn btn-primary btn-sm" id="proactive-generate">📝 Gerar outro exemplo</button>
+                    </div>
+                    <div id="proactive-feedback" class="mt-2"></div>
+                </div>`;
+
+            const pdfTab = document.getElementById('pdf-tab');
+            if (pdfTab) new bootstrap.Tab(pdfTab).show();
+            pdfContainer.insertBefore(card, pdfContainer.firstChild);
+
+            document.getElementById('proactive-dismiss').onclick = () => {
+                card.remove();
+                _startProactiveTimer();
+            };
+
+            document.getElementById('proactive-ok').onclick = () => {
+                card.remove();
+                _startProactiveTimer();
+            };
+
+            document.getElementById('proactive-generate').onclick = () => {
+                const feedbackEl = document.getElementById('proactive-feedback');
+                const okBtn = document.getElementById('proactive-ok');
+                const genBtn = document.getElementById('proactive-generate');
+                if (feedbackEl) feedbackEl.innerHTML = `
+                    <span class="spinner-border spinner-border-sm text-primary me-2" role="status"></span>
+                    <span class="text-muted small">Gerando exemplo personalizado...</span>`;
+                if (okBtn) okBtn.disabled = true;
+                if (genBtn) genBtn.disabled = true;
+
+                fetch('/orchestrator/agent/generate_wrong_answers_text', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ student_id: my_id, session_id: session_id, attempt_number: 0 })
+                })
+                .then(r => r.json())
+                .then(aiData => {
+                    card.remove();
+                    if (!aiData.study_text) return;
+                    localStorage.setItem(`reuso_study_text_${session_id}_${my_id}`, aiData.study_text);
+                    const newCard = document.createElement('div');
+                    newCard.className = 'card border-primary shadow-sm mb-3';
+                    newCard.innerHTML = `
+                        <div class="card-header bg-primary text-white fw-bold">📚 Exemplo Personalizado</div>
+                        <div class="card-body">
+                            <p class="text-muted small mb-3">Gerado especialmente para você com base no conteúdo desta sessão.</p>
+                            <div style="white-space: pre-wrap; line-height: 1.8;">${aiData.study_text}</div>
+                        </div>`;
+                    pdfContainer.innerHTML = '';
+                    pdfContainer.appendChild(newCard);
+                })
+                .catch(() => { card.remove(); });
+            };
+        }, 7 * 60 * 1000);
+    }
+
     function renderPlanPanel(tacticSequence, strategyTactics, currentTacticIndex) {
         const panel = document.getElementById('plan-panel');
         if (!panel || !tacticSequence || !tacticSequence.length || !strategyTactics) return;
@@ -306,6 +392,7 @@ document.addEventListener("DOMContentLoaded", () => {
         envio_informacao_isActive = false;
         regras_isActive = false;
         reusoExercisesState = null;
+        _clearProactiveTimer();
 
         // Remove os elementos da tática anterior antes de montar a nova
         removerElemento();
@@ -453,6 +540,7 @@ document.addEventListener("DOMContentLoaded", () => {
 
 
                         tatic_here.appendChild(tabContainer);
+                        _startProactiveTimer();
 
                         // ---------- Carregar PDFs ----------
                         const pdfData = document.getElementById("pdf_data").getAttribute("data-pdfs");
@@ -646,6 +734,7 @@ document.addEventListener("DOMContentLoaded", () => {
                                             const feedbackEl = document.getElementById("formFeedback");
                                             feedbackEl.textContent = respData.resp;
                                             console.log("Respostas enviadas:", respData);
+                                            _clearProactiveTimer();
 
                                             // Atualiza maestria em tempo real (paralelo, fire-and-render)
                                             showMasteryLoading();

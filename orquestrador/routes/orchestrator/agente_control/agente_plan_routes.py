@@ -1,146 +1,312 @@
 import json
 import logging
+import os
 import requests
 from flask import Blueprint, jsonify, request
+from openai import OpenAI
 from ...services_routs import CONTROL_URL, STRATEGIES_URL, USER_URL
 
 logging.basicConfig(level=logging.INFO)
 
 agente_plan_bp = Blueprint('agente_plan_bp', __name__)
 
+TACTIC_TYPE_DESCRIPTIONS = """TIPOS DE TÁTICAS:
+- Reuso: Apresenta recursos didáticos (PDFs, vídeos, exercícios) por tempo determinado.
+- Debate Síncrono: Chat em tempo real entre alunos e professor.
+- Envio de Informação: Envia materiais por e-mail.
+- Mudança de Estratégia: Troca a estratégia didática atual.
+- Regra: Executa ações condicionalmente."""
 
-def _aggregate_student_context(student_id, session_id, session_data):
-    """Agrega perfil, histórico, maestria, chat e notas do aluno para passar à IA."""
+# ---------------------------------------------------------------------------
+# GUARDRAILS — regras pedagógicas obrigatórias
+# Cada regra tem: id, descrição legível, e função fix(sequence, tactics, ctx)
+# que retorna a sequência corrigida (ou a original se não houver violação).
+# ---------------------------------------------------------------------------
+
+_TRANSITION_TACTICS = {"mudança de estratégia", "mudanca de estrategia", "regra", "regras"}
+_REVIEW_TACTICS = {"reuso", "debate síncrono", "debate sincrono"}
+
+
+def _tactic_name(idx, tactics):
+    t = next((t for t in tactics if t['index'] == idx), None)
+    return t['name'].strip().lower() if t else ""
+
+
+def _guardrail_no_transition_first(sequence, tactics, ctx):
+    """G1: Táticas de transição não podem abrir a sessão."""
+    if not sequence:
+        return sequence, None
+    if _tactic_name(sequence[0], tactics) not in _TRANSITION_TACTICS:
+        return sequence, None
+    seq = list(sequence)
+    for i in range(1, len(seq)):
+        if _tactic_name(seq[i], tactics) not in _TRANSITION_TACTICS:
+            seq[0], seq[i] = seq[i], seq[0]
+            return seq, f"G1: tática de transição removida da 1ª posição (trocada com posição {i+1})"
+    return sequence, "G1: violação detectada mas sem tática alternativa disponível"
+
+
+def _guardrail_review_first_on_replan(sequence, tactics, ctx):
+    """G2: No replanejamento após falha, tática de revisão deve ser a primeira."""
+    if not ctx.get('is_replan') or not sequence:
+        return sequence, None
+    if _tactic_name(sequence[0], tactics) in _REVIEW_TACTICS:
+        return sequence, None
+    seq = list(sequence)
+    for i in range(1, len(seq)):
+        if _tactic_name(seq[i], tactics) in _REVIEW_TACTICS:
+            seq[0], seq[i] = seq[i], seq[0]
+            return seq, f"G2: replanejamento sem revisão primeiro — tática de revisão movida para posição 1 (era posição {i+1})"
+    return sequence, None
+
+
+def _guardrail_low_mastery_reuso_early(sequence, tactics, ctx):
+    """G3: Se maestria < 40% em algum conceito, Reuso deve estar na primeira metade."""
+    mastery = ctx.get('mastery', [])
+    if not mastery or not sequence:
+        return sequence, None
+    has_low_mastery = any(m.get('mastery_pct', 100) < 40 for m in mastery)
+    if not has_low_mastery:
+        return sequence, None
+    half = max(1, len(sequence) // 2)
+    first_half = sequence[:half]
+    reuso_in_first_half = any(_tactic_name(idx, tactics) == 'reuso' for idx in first_half)
+    if reuso_in_first_half:
+        return sequence, None
+    seq = list(sequence)
+    for i in range(half, len(seq)):
+        if _tactic_name(seq[i], tactics) == 'reuso':
+            target = half - 1
+            seq[target], seq[i] = seq[i], seq[target]
+            return seq, f"G3: maestria < 40% — Reuso movido para posição {target+1} (era posição {i+1})"
+    return sequence, None
+
+
+GUARDRAILS = [
+    _guardrail_no_transition_first,
+    _guardrail_review_first_on_replan,
+    _guardrail_low_mastery_reuso_early,
+]
+
+GUARDRAIL_DESCRIPTIONS = """RESTRIÇÕES PEDAGÓGICAS OBRIGATÓRIAS (você DEVE respeitá-las):
+G1: Táticas de transição ("Mudança de Estratégia", "Regra") não podem ser a primeira tática da sequência.
+G2: Em replanejamento após falha, a primeira tática deve ser de revisão ("Reuso" ou "Debate Síncrono") se disponível.
+G3: Se o aluno tem maestria < 40% em algum conceito, "Reuso" deve estar na primeira metade da sequência."""
+
+
+def _apply_guardrails(plan, available_tactics, is_replan, mastery=None):
+    """Aplica todas as regras de guardrails à sequência gerada pelo agente."""
+    sequence = list(plan['tactic_sequence'])
+    ctx = {'is_replan': is_replan, 'mastery': mastery or []}
+    violations = []
+
+    for rule_fn in GUARDRAILS:
+        sequence, msg = rule_fn(sequence, available_tactics, ctx)
+        if msg:
+            violations.append(msg)
+            logging.warning("Guardrail aplicado: %s", msg)
+
+    if violations:
+        logging.info("Total de guardrails aplicados: %d — %s", len(violations), violations)
+
+    return {**plan, 'tactic_sequence': sequence}, violations
+
+
+# ---------------------------------------------------------------------------
+
+TOOLS = [
+    {
+        "type": "function",
+        "function": {
+            "name": "get_student_profile",
+            "description": "Busca o perfil individual do aluno: nome, curso, idade, tipo de conteúdo preferido, forma de comunicação preferida e se aceita e-mail.",
+            "parameters": {"type": "object", "properties": {}, "required": []}
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_class_profile",
+            "description": "Busca as preferências de todos os alunos matriculados na sessão.",
+            "parameters": {"type": "object", "properties": {}, "required": []}
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_student_mastery",
+            "description": "Busca a maestria do aluno por conceito: percentuais da sessão atual e médias de sessões anteriores. Percentuais menores indicam maior necessidade de reforço.",
+            "parameters": {"type": "object", "properties": {}, "required": []}
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_student_history",
+            "description": "Busca o histórico das últimas sessões do aluno com resumos de desempenho.",
+            "parameters": {"type": "object", "properties": {}, "required": []}
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_exercise_scores",
+            "description": "Busca as notas do aluno nos exercícios da sessão atual.",
+            "parameters": {"type": "object", "properties": {}, "required": []}
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_chat_messages",
+            "description": "Busca as últimas mensagens enviadas pelo aluno nos chats das táticas desta sessão.",
+            "parameters": {"type": "object", "properties": {}, "required": []}
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "create_session_plan",
+            "description": "Cria o plano final da sessão. Chame esta ferramenta quando tiver informações suficientes para criar um plano pedagógico personalizado.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "tactic_sequence": {
+                        "type": "array",
+                        "items": {"type": "integer"},
+                        "description": "Lista ordenada com TODOS os índices de táticas disponíveis, cada um exatamente uma vez."
+                    },
+                    "overall_goal": {
+                        "type": "string",
+                        "description": "Objetivo pedagógico claro e motivador para esta sessão em 1-2 frases."
+                    },
+                    "tactic_reasons": {
+                        "type": "object",
+                        "additionalProperties": {"type": "string"},
+                        "description": "Justificativa para cada tática, com o índice como chave string."
+                    }
+                },
+                "required": ["tactic_sequence", "overall_goal", "tactic_reasons"]
+            }
+        }
+    }
+]
+
+
+def _build_groq_client():
+    return OpenAI(
+        api_key=os.environ.get('GROQ_API_KEY'),
+        base_url="https://api.groq.com/openai/v1"
+    )
+
+
+def _run_planner_agent(student_id, session_id, session_data, available_tactics, is_replan=False):
+    """
+    Loop agentico: o LLM decide quais ferramentas chamar para coletar dados
+    sobre o aluno e então chama create_session_plan com o plano final.
+    Retorna (plan_dict, mastery_data) onde mastery_data é usado pelos guardrails.
+    """
     strategy_ids = session_data.get('strategies', [])
     student_ids = session_data.get('students', [])
     strategy_id = strategy_ids[0] if strategy_ids else None
 
-    # Táticas da estratégia
     strategy_tactics = []
     if strategy_id:
         try:
-            strat_resp = requests.get(f"{STRATEGIES_URL}/strategies/{strategy_id}", timeout=10)
-            if strat_resp.status_code == 200:
-                strategy_tactics = strat_resp.json().get('tatics', [])
+            r = requests.get(f"{STRATEGIES_URL}/strategies/{strategy_id}", timeout=10)
+            if r.status_code == 200:
+                strategy_tactics = r.json().get('tatics', [])
         except Exception as e:
             logging.warning("Erro ao buscar táticas strategy_id=%s: %s", strategy_id, e)
 
-    # Perfil individual do aluno
-    student_profile = "Perfil não disponível."
-    try:
-        user_resp = requests.get(f"{USER_URL}/students/{student_id}/preferences", timeout=10)
-        if user_resp.status_code == 200:
-            d = user_resp.json()
-            email_txt = "aceita e-mail" if d.get('pref_receive_email') else "não aceita e-mail"
-            student_profile = (
-                f"Nome: {d.get('name') or 'N/A'}. "
-                f"Curso: {d.get('course') or 'N/A'}. "
-                f"Idade: {d.get('age') or 'N/A'}. "
-                f"Conteúdo preferido: {d.get('pref_content_type') or 'N/A'}. "
-                f"Comunicação preferida: {d.get('pref_communication') or 'N/A'}. "
-                f"{email_txt.capitalize()}."
-            )
-    except Exception as e:
-        logging.warning("Erro ao buscar perfil student_id=%s: %s", student_id, e)
+    valid_indices = [t['index'] for t in available_tactics]
+    tactics_text = "\n".join(
+        f"- Índice {t['index']}: {t['name']} | {str(t.get('description', ''))[:120]}"
+        for t in available_tactics
+    )
+    replan_note = (
+        "\nATENÇÃO: Este é um REPLANEJAMENTO após dificuldades. "
+        "Priorize táticas que reforcem os pontos fracos identificados.\n"
+        if is_replan else ""
+    )
 
-    # Perfil da turma
-    class_profile = "Perfil da turma desconhecido."
-    try:
-        class_resp = requests.post(
-            f"{USER_URL}/students/batch_preferences",
-            json={"student_ids": student_ids},
-            timeout=10
-        )
-        if class_resp.status_code == 200:
-            students_raw = class_resp.json().get('students', [])
-            if students_raw:
-                lines = []
-                for s in students_raw:
-                    s_email = "aceita e-mail" if s.get('pref_receive_email') else "não aceita e-mail"
-                    lines.append(
-                        f"- {s.get('name') or 'Aluno'}: "
-                        f"conteúdo '{s.get('pref_content_type') or 'N/A'}', "
-                        f"comunicação '{s.get('pref_communication') or 'N/A'}', "
-                        f"{s_email}."
-                    )
-                class_profile = "\n".join(lines)
-    except Exception as e:
-        logging.warning("Erro ao buscar perfil da turma: %s", e)
+    system_prompt = f"""Você é um agente pedagógico especializado em aprendizagem adaptativa.
+Sua tarefa é criar um plano personalizado de sessão para um aluno específico.
+{replan_note}
+{TACTIC_TYPE_DESCRIPTIONS}
 
-    # Notas do aluno
-    exercise_scores = "Sem registros de exercícios."
-    verified = [
-        v for v in session_data.get('verified_answers', [])
-        if str(v.get('student_id', '')) == str(student_id)
-    ]
-    if verified:
-        scores = [v.get('score', 0) for v in verified]
-        latest = verified[-1]
-        total_q = max(len(latest.get('answers', [])), 1)
-        latest_pct = int((latest.get('score', 0) / total_q) * 100)
-        exercise_scores = (
-            f"{len(scores)} tentativa(s). Notas: {scores}. "
-            f"Última: {latest.get('score', 0)}/{total_q} ({latest_pct}%)."
-        )
+{GUARDRAIL_DESCRIPTIONS}
 
-    # Username para filtrar mensagens do chat
-    student_username = str(student_id)
-    try:
-        student_resp = requests.get(f"{USER_URL}/students/{student_id}", timeout=10)
-        if student_resp.status_code == 200:
-            student_username = student_resp.json().get('username', str(student_id))
-    except Exception as e:
-        logging.warning("Erro ao buscar username student_id=%s: %s", student_id, e)
+TÁTICAS DISPONÍVEIS (todos os índices {valid_indices} devem aparecer no plano):
+{tactics_text}
 
-    # Últimas 5 mensagens no chat
-    student_chat_messages = []
-    for tactic in strategy_tactics:
-        chat_id = tactic.get('chat_id')
-        if not chat_id:
-            continue
+INSTRUÇÕES:
+1. Use as ferramentas para coletar as informações que julgar relevantes sobre o aluno.
+2. Não é obrigatório chamar todas as ferramentas — use seu julgamento.
+3. Respeite obrigatoriamente as RESTRIÇÕES PEDAGÓGICAS acima ao ordenar as táticas.
+4. Quando tiver informações suficientes, chame create_session_plan com o plano final.
+5. O plano deve conter EXATAMENTE os índices {valid_indices}, cada um UMA única vez.
+6. Priorize conceitos com menor maestria (menor % = maior necessidade de reforço)."""
+
+    # Captura mastery durante execução para uso nos guardrails
+    mastery_captured = []
+
+    # --- Implementações das ferramentas ---
+
+    def _exec_get_student_profile():
         try:
-            chat_resp = requests.get(f"{STRATEGIES_URL}/chat/{chat_id}/general_messages", timeout=10)
-            if chat_resp.status_code == 200:
-                resp_json = chat_resp.json()
-                msgs = resp_json.get('messages', []) if isinstance(resp_json, dict) else resp_json
-                for msg in (msgs or []):
-                    if isinstance(msg, dict) and msg.get('username') == student_username:
-                        student_chat_messages.append(msg.get('content', ''))
+            r = requests.get(f"{USER_URL}/students/{student_id}/preferences", timeout=10)
+            if r.status_code == 200:
+                d = r.json()
+                return {
+                    "name": d.get('name') or 'N/A',
+                    "course": d.get('course') or 'N/A',
+                    "age": d.get('age') or 'N/A',
+                    "pref_content_type": d.get('pref_content_type') or 'N/A',
+                    "pref_communication": d.get('pref_communication') or 'N/A',
+                    "pref_receive_email": d.get('pref_receive_email', False),
+                }
         except Exception as e:
-            logging.warning("Erro ao buscar mensagens chat_id=%s: %s", chat_id, e)
-    last_5_messages = student_chat_messages[-5:]
+            logging.warning("Erro get_student_profile student_id=%s: %s", student_id, e)
+        return {"error": "Perfil não disponível."}
 
-    # Histórico de sessões anteriores (guardamos entries para reusar os session_ids abaixo)
-    student_history = ""
-    history_entries = []
-    try:
-        hist_resp = requests.get(
-            f"{USER_URL}/students/{student_id}/learning_history",
-            params={"limit": 3},
-            timeout=10
-        )
-        if hist_resp.status_code == 200:
-            history_entries = hist_resp.json().get('history', [])
-            if history_entries:
-                lines = [f"- Sessão {h['session_id']}: {h['summary']}" for h in history_entries]
-                student_history = "\n".join(lines)
-    except Exception as e:
-        logging.warning("Erro ao buscar histórico student_id=%s: %s", student_id, e)
+    def _exec_get_class_profile():
+        try:
+            r = requests.post(
+                f"{USER_URL}/students/batch_preferences",
+                json={"student_ids": student_ids},
+                timeout=10
+            )
+            if r.status_code == 200:
+                return r.json().get('students', [])
+        except Exception as e:
+            logging.warning("Erro get_class_profile: %s", e)
+        return []
 
-    # Maestria por conceito — sessão atual + média das sessões anteriores
-    student_mastery_text = ""
-    try:
-        # 1. Sessão atual (pode estar vazia se a sessão acabou de começar)
+    def _exec_get_student_mastery():
+        nonlocal mastery_captured
+        history_entries = []
+        try:
+            h = requests.get(
+                f"{USER_URL}/students/{student_id}/learning_history",
+                params={"limit": 3}, timeout=10
+            )
+            if h.status_code == 200:
+                history_entries = h.json().get('history', [])
+        except Exception:
+            pass
+
         current_mastery = []
-        mastery_resp = requests.get(
-            f"{USER_URL}/students/{student_id}/mastery",
-            params={"session_id": session_id},
-            timeout=10
-        )
-        if mastery_resp.status_code == 200:
-            current_mastery = mastery_resp.json().get('mastery', [])
+        try:
+            m = requests.get(
+                f"{USER_URL}/students/{student_id}/mastery",
+                params={"session_id": session_id}, timeout=10
+            )
+            if m.status_code == 200:
+                current_mastery = m.json().get('mastery', [])
+        except Exception:
+            pass
 
-        # 2. Média das sessões anteriores usando os session_ids do histórico
         concept_totals: dict = {}
         concept_counts: dict = {}
         for entry in history_entries:
@@ -150,8 +316,7 @@ def _aggregate_student_context(student_id, session_id, session_data):
             try:
                 pm = requests.get(
                     f"{USER_URL}/students/{student_id}/mastery",
-                    params={"session_id": past_sid},
-                    timeout=5
+                    params={"session_id": past_sid}, timeout=5
                 )
                 if pm.status_code == 200:
                     for m in pm.json().get('mastery', []):
@@ -161,45 +326,179 @@ def _aggregate_student_context(student_id, session_id, session_data):
             except Exception:
                 pass
 
-        parts = []
-        if current_mastery:
-            lines = [f"- {m['concept']}: {m['mastery_pct']}%" for m in current_mastery]
-            parts.append("Sessão atual:\n" + "\n".join(lines))
+        historical = [
+            {
+                "concept": c,
+                "mastery_pct": round(concept_totals[c] / concept_counts[c]),
+                "sessions_count": concept_counts[c],
+            }
+            for c in concept_totals
+        ]
 
-        if concept_totals:
-            lines = [
-                f"- {c}: {round(concept_totals[c] / concept_counts[c])}%"
-                f" (média de {concept_counts[c]} sessão(ões) anterior(es))"
-                for c in concept_totals
-            ]
-            parts.append("Histórico de sessões anteriores:\n" + "\n".join(lines))
+        # Captura para guardrail G3: usa maestria atual ou histórica
+        mastery_captured = current_mastery if current_mastery else historical
 
-        student_mastery_text = (
-            "\n\n".join(parts)
-            if parts
-            else "Primeira sessão — sem dados de maestria anteriores."
-        )
-    except Exception as e:
-        logging.warning("Erro ao buscar maestria student_id=%s: %s", student_id, e)
+        return {
+            "current_session": current_mastery,
+            "historical_average": historical,
+        }
 
-    return {
-        "strategy_tactics": strategy_tactics,
-        "student_profile": student_profile,
-        "class_profile": class_profile,
-        "exercise_scores": exercise_scores,
-        "chat_messages": last_5_messages,
-        "student_history": student_history,
-        "student_mastery": student_mastery_text,
+    def _exec_get_student_history():
+        try:
+            r = requests.get(
+                f"{USER_URL}/students/{student_id}/learning_history",
+                params={"limit": 3}, timeout=10
+            )
+            if r.status_code == 200:
+                return r.json().get('history', [])
+        except Exception as e:
+            logging.warning("Erro get_student_history student_id=%s: %s", student_id, e)
+        return []
+
+    def _exec_get_exercise_scores():
+        verified = [
+            v for v in session_data.get('verified_answers', [])
+            if str(v.get('student_id', '')) == str(student_id)
+        ]
+        if not verified:
+            return {"message": "Sem registros de exercícios nesta sessão."}
+        scores = [v.get('score', 0) for v in verified]
+        latest = verified[-1]
+        total_q = max(len(latest.get('answers', [])), 1)
+        return {
+            "attempts": len(scores),
+            "scores": scores,
+            "latest_score": latest.get('score', 0),
+            "latest_total": total_q,
+            "latest_pct": int((latest.get('score', 0) / total_q) * 100),
+        }
+
+    def _exec_get_chat_messages():
+        student_username = str(student_id)
+        try:
+            sr = requests.get(f"{USER_URL}/students/{student_id}", timeout=10)
+            if sr.status_code == 200:
+                student_username = sr.json().get('username', str(student_id))
+        except Exception:
+            pass
+
+        messages = []
+        for tactic in strategy_tactics:
+            chat_id = tactic.get('chat_id')
+            if not chat_id:
+                continue
+            try:
+                cr = requests.get(f"{STRATEGIES_URL}/chat/{chat_id}/general_messages", timeout=10)
+                if cr.status_code == 200:
+                    resp = cr.json()
+                    msgs = resp.get('messages', []) if isinstance(resp, dict) else resp
+                    for msg in (msgs or []):
+                        if isinstance(msg, dict) and msg.get('username') == student_username:
+                            messages.append(msg.get('content', ''))
+            except Exception:
+                pass
+        return {"messages": messages[-5:]}
+
+    tool_executors = {
+        "get_student_profile": _exec_get_student_profile,
+        "get_class_profile": _exec_get_class_profile,
+        "get_student_mastery": _exec_get_student_mastery,
+        "get_student_history": _exec_get_student_history,
+        "get_exercise_scores": _exec_get_exercise_scores,
+        "get_chat_messages": _exec_get_chat_messages,
     }
+
+    client = _build_groq_client()
+    messages = [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": "Crie o plano de sessão personalizado para este aluno."}
+    ]
+
+    max_iterations = 10
+    for iteration in range(max_iterations):
+        response = client.chat.completions.create(
+            model="llama-3.3-70b-versatile",
+            messages=messages,
+            tools=TOOLS,
+            tool_choice="required",
+            temperature=0.3
+        )
+
+        msg = response.choices[0].message
+        messages.append(msg)
+
+        if not msg.tool_calls:
+            break
+
+        plan_result = None
+        tool_results = []
+
+        for tool_call in msg.tool_calls:
+            fn_name = tool_call.function.name
+            logging.info("Agente chamou: %s (iter=%d, student=%s)", fn_name, iteration, student_id)
+
+            if fn_name == "create_session_plan":
+                try:
+                    plan_result = json.loads(tool_call.function.arguments)
+                except Exception:
+                    plan_result = {}
+                tool_results.append({
+                    "role": "tool",
+                    "tool_call_id": tool_call.id,
+                    "content": "Plano registrado."
+                })
+            elif fn_name in tool_executors:
+                result = tool_executors[fn_name]()
+                tool_results.append({
+                    "role": "tool",
+                    "tool_call_id": tool_call.id,
+                    "content": json.dumps(result, ensure_ascii=False)
+                })
+            else:
+                tool_results.append({
+                    "role": "tool",
+                    "tool_call_id": tool_call.id,
+                    "content": "Ferramenta não reconhecida."
+                })
+
+        messages.extend(tool_results)
+
+        if plan_result is not None:
+            raw_seq = plan_result.get('tactic_sequence', [])
+            seen, seq = set(), []
+            for i in raw_seq:
+                try:
+                    idx = int(i)
+                    if idx in valid_indices and idx not in seen:
+                        seq.append(idx)
+                        seen.add(idx)
+                except (ValueError, TypeError):
+                    pass
+            for idx in valid_indices:
+                if idx not in seen:
+                    seq.append(idx)
+
+            logging.info("Plano gerado em %d iteração(ões): sequence=%s student=%s", iteration + 1, seq, student_id)
+            raw_plan = {
+                "tactic_sequence": seq,
+                "overall_goal": plan_result.get('overall_goal', ''),
+                "tactic_reasons": plan_result.get('tactic_reasons', {}),
+            }
+            return raw_plan, mastery_captured
+
+    logging.warning("Agente não gerou plano em %d iterações, usando fallback. student=%s", max_iterations, student_id)
+    return {
+        "tactic_sequence": valid_indices,
+        "overall_goal": "Completar todas as atividades da sessão.",
+        "tactic_reasons": {},
+    }, mastery_captured
 
 
 @agente_plan_bp.route('/orchestrator/agent/plan_session', methods=['POST'])
 def plan_session():
     """
-    Planejamento multi-passo: a IA cria a sequência completa de táticas para o aluno
-    ANTES de iniciar a primeira tática. O plano é salvo no banco e usado nas transições.
-
-    Substitui adaptive_next_tactic(is_first=True).
+    Planejamento inicial: agente decide quais dados coletar e cria a sequência
+    completa de táticas antes de iniciar a primeira tática.
     """
     data = request.get_json() or {}
     student_id = data.get('student_id')
@@ -214,58 +513,40 @@ def plan_session():
             return jsonify({"error": "Falha ao buscar sessão"}), 502
         session_data = session_resp.json()
 
-        ctx = _aggregate_student_context(student_id, session_id, session_data)
-        strategy_tactics = ctx['strategy_tactics']
+        strategy_ids = session_data.get('strategies', [])
+        strategy_id = strategy_ids[0] if strategy_ids else None
+        strategy_tactics = []
+        if strategy_id:
+            strat_resp = requests.get(f"{STRATEGIES_URL}/strategies/{strategy_id}", timeout=10)
+            if strat_resp.status_code == 200:
+                strategy_tactics = strat_resp.json().get('tatics', [])
 
         if not strategy_tactics:
             return jsonify({"error": "Sem táticas na estratégia"}), 400
 
-        all_tactics = [
+        available_tactics = [
             {"index": i, "name": t.get('name', ''), "description": t.get('description', '')}
             for i, t in enumerate(strategy_tactics)
         ]
 
-        ai_payload = {
-            "student_profile": ctx['student_profile'],
-            "class_profile": ctx['class_profile'],
-            "exercise_scores": ctx['exercise_scores'],
-            "all_tactics": all_tactics,
-            "chat_messages": ctx['chat_messages'],
-            "student_history": ctx['student_history'],
-            "student_mastery": ctx['student_mastery'],
-            "is_replan": False,
-        }
+        logging.info("Iniciando agente planejador student_id=%s session_id=%s", student_id, session_id)
+        plan, mastery = _run_planner_agent(student_id, session_id, session_data, available_tactics, is_replan=False)
+        plan, violations = _apply_guardrails(plan, available_tactics, is_replan=False, mastery=mastery)
 
-        logging.info("Chamando IA para planejar sessão student_id=%s session_id=%s", student_id, session_id)
-
-        ai_resp = requests.post(
-            f"{STRATEGIES_URL}/agent/plan_session_tactics",
-            json=ai_payload,
-            timeout=60
-        )
-
-        if ai_resp.status_code != 200:
-            # Fallback: ordem natural das táticas
-            tactic_sequence = list(range(len(strategy_tactics)))
-            overall_goal = "Completar todas as atividades da sessão."
-            tactic_reasons = {}
-        else:
-            ai_data = ai_resp.json()
-            tactic_sequence = ai_data.get('tactic_sequence', list(range(len(strategy_tactics))))
-            overall_goal = ai_data.get('overall_goal', '')
-            tactic_reasons = ai_data.get('tactic_reasons', {})
-
-        # Primeiro índice do plano = primeira tática a executar
+        tactic_sequence = plan['tactic_sequence']
         next_tactic_index = tactic_sequence[0] if tactic_sequence else 0
-        next_tactic_name = strategy_tactics[next_tactic_index].get('name', '') if next_tactic_index < len(strategy_tactics) else ''
+        next_tactic_name = (
+            strategy_tactics[next_tactic_index].get('name', '')
+            if next_tactic_index < len(strategy_tactics) else ''
+        )
 
         plan_json = json.dumps({
             "tactic_sequence": tactic_sequence,
-            "overall_goal": overall_goal,
-            "tactic_reasons": tactic_reasons,
+            "overall_goal": plan['overall_goal'],
+            "tactic_reasons": plan['tactic_reasons'],
+            "guardrail_violations": violations,
         })
 
-        # Persiste plano + tática inicial no banco
         set_resp = requests.post(
             f"{CONTROL_URL}/sessions/{session_id}/student/{student_id}/set_tactic",
             json={
@@ -278,14 +559,15 @@ def plan_session():
         if set_resp.status_code != 200:
             return jsonify({"error": "Falha ao definir tática do aluno"}), 502
 
-        logging.info("Plano salvo student_id=%s sequence=%s", student_id, tactic_sequence)
+        logging.info("Plano salvo student_id=%s sequence=%s guardrails=%s", student_id, tactic_sequence, violations)
 
         return jsonify({
             "next_tactic_index": next_tactic_index,
             "next_tactic_name": next_tactic_name,
-            "overall_goal": overall_goal,
+            "overall_goal": plan['overall_goal'],
             "tactic_sequence": tactic_sequence,
-            "reasoning": tactic_reasons.get(str(next_tactic_index), overall_goal),
+            "reasoning": plan['tactic_reasons'].get(str(next_tactic_index), plan['overall_goal']),
+            "guardrail_violations": violations,
         }), 200
 
     except Exception as e:
@@ -296,11 +578,9 @@ def plan_session():
 @agente_plan_bp.route('/orchestrator/agent/replan_session', methods=['POST'])
 def replan_session():
     """
-    Planeja/replaneja as táticas RESTANTES e salva no banco sem alterar a tática atual.
-    Usado em dois momentos:
-      - is_replan=False: primeiro exercício concluído → planeja com maestria real disponível.
-      - is_replan=True : 2ª falha no Reuso → reordena para reforçar pontos fracos.
-    Busca executed_tactic_indices diretamente do banco (não precisa vir na request).
+    Planeja/replaneja as táticas restantes.
+    - is_replan=False: após primeiro exercício, planeja com maestria real.
+    - is_replan=True: 2ª falha no Reuso, reordena para reforçar pontos fracos.
     """
     data = request.get_json() or {}
     student_id = data.get('student_id')
@@ -311,7 +591,6 @@ def replan_session():
         return jsonify({"error": "student_id e session_id são obrigatórios"}), 400
 
     try:
-        # Busca progresso do aluno para obter executed_tactic_indices do banco
         executed_tactic_indices = []
         try:
             progress_resp = requests.get(
@@ -319,84 +598,65 @@ def replan_session():
                 timeout=10
             )
             if progress_resp.status_code == 200:
-                prog = progress_resp.json()
-                executed_tactic_indices = list(prog.get('executed_tactic_indices', []))
+                executed_tactic_indices = list(progress_resp.json().get('executed_tactic_indices', []))
         except Exception as e:
-            logging.warning("Erro ao buscar progresso para replan student_id=%s: %s", student_id, e)
+            logging.warning("Erro ao buscar progresso student_id=%s: %s", student_id, e)
 
         session_resp = requests.get(f"{CONTROL_URL}/sessions/{session_id}", timeout=10)
         if session_resp.status_code != 200:
             return jsonify({"error": "Falha ao buscar sessão"}), 502
         session_data = session_resp.json()
 
-        ctx = _aggregate_student_context(student_id, session_id, session_data)
-        strategy_tactics = ctx['strategy_tactics']
+        strategy_ids = session_data.get('strategies', [])
+        strategy_id = strategy_ids[0] if strategy_ids else None
+        strategy_tactics = []
+        if strategy_id:
+            strat_resp = requests.get(f"{STRATEGIES_URL}/strategies/{strategy_id}", timeout=10)
+            if strat_resp.status_code == 200:
+                strategy_tactics = strat_resp.json().get('tatics', [])
 
         if not strategy_tactics:
             return jsonify({"error": "Sem táticas na estratégia"}), 400
 
-        # Táticas ainda não executadas
         remaining_indices = [i for i in range(len(strategy_tactics)) if i not in executed_tactic_indices]
 
         if not remaining_indices:
             return jsonify({"message": "Sem táticas restantes para replanejar"}), 200
 
-        remaining_tactics = [
+        available_tactics = [
             {"index": i, "name": strategy_tactics[i].get('name', ''), "description": strategy_tactics[i].get('description', '')}
             for i in remaining_indices
         ]
 
-        ai_payload = {
-            "student_profile": ctx['student_profile'],
-            "class_profile": ctx['class_profile'],
-            "exercise_scores": ctx['exercise_scores'],
-            "all_tactics": remaining_tactics,
-            "chat_messages": ctx['chat_messages'],
-            "student_history": ctx['student_history'],
-            "student_mastery": ctx['student_mastery'],
-            "is_replan": is_replan,
-        }
-
-        logging.info("Chamando IA para %s student_id=%s remaining=%s",
-                     "replanejar" if is_replan else "planejar após exercício",
-                     student_id, remaining_indices)
-
-        ai_resp = requests.post(
-            f"{STRATEGIES_URL}/agent/plan_session_tactics",
-            json=ai_payload,
-            timeout=60
+        logging.info(
+            "Iniciando agente %s student_id=%s remaining=%s",
+            "replanejador" if is_replan else "planejador pós-exercício",
+            student_id, remaining_indices
         )
-
-        if ai_resp.status_code != 200:
-            new_sequence = remaining_indices
-            overall_goal = "Continuar com as atividades restantes."
-            tactic_reasons = {}
-        else:
-            ai_data = ai_resp.json()
-            new_sequence = ai_data.get('tactic_sequence', remaining_indices)
-            overall_goal = ai_data.get('overall_goal', '')
-            tactic_reasons = ai_data.get('tactic_reasons', {})
+        plan, mastery = _run_planner_agent(student_id, session_id, session_data, available_tactics, is_replan=is_replan)
+        plan, violations = _apply_guardrails(plan, available_tactics, is_replan=is_replan, mastery=mastery)
 
         plan_json = json.dumps({
-            "tactic_sequence": new_sequence,
-            "overall_goal": overall_goal,
-            "tactic_reasons": tactic_reasons,
+            "tactic_sequence": plan['tactic_sequence'],
+            "overall_goal": plan['overall_goal'],
+            "tactic_reasons": plan['tactic_reasons'],
+            "guardrail_violations": violations,
         })
 
-        # Atualiza apenas o plano, mantendo a tática atual
         requests.post(
             f"{CONTROL_URL}/sessions/{session_id}/student/{student_id}/update_session_plan",
             json={"session_plan": plan_json},
             timeout=10
         )
 
-        logging.info("Plano salvo student_id=%s new_sequence=%s is_replan=%s",
-                     student_id, new_sequence, is_replan)
+        logging.info("Plano atualizado student_id=%s new_sequence=%s is_replan=%s guardrails=%s",
+                     student_id, plan['tactic_sequence'], is_replan, violations)
 
         return jsonify({
-            "new_sequence": new_sequence,
-            "overall_goal": overall_goal,
+            "new_sequence": plan['tactic_sequence'],
+            "overall_goal": plan['overall_goal'],
             "message": "Plano atualizado com sucesso.",
+            "guardrail_violations": violations,
         }), 200
 
     except Exception as e:

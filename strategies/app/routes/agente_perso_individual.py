@@ -148,25 +148,46 @@ def generate_wrong_answers_study_text():
     student_history = data.get('student_history', '')
     attempt_number = int(data.get('attempt_number', 1))
 
-    if not wrong_questions:
-        return jsonify({"error": "wrong_questions é obrigatório"}), 400
-
     if not Config.GROQ_API_KEY:
         return jsonify({"error": "GROQ_API_KEY não configurada"}), 500
 
-    questions_text = "\n".join(f"- {q}" for q in wrong_questions) if isinstance(wrong_questions, list) else str(wrong_questions)
+    questions_text = "\n".join(f"- {q}" for q in wrong_questions) if wrong_questions else "Tópico geral da sessão de aprendizagem."
     history_text = student_history if student_history else "Primeira sessão — sem histórico anterior."
 
-    if attempt_number == 1:
+    is_proactive = (attempt_number == 0)
+
+    if is_proactive:
+        approach_instruction = (
+            "O aluno está estudando o material e pediu um exemplo adicional. "
+            "Crie um exemplo prático e explicativo sobre os tópicos abordados nas questões. "
+            "Use situações do cotidiano para ilustrar os conceitos. "
+            "Termine com 2-3 dicas de como fixar o conteúdo."
+        )
+        prompt_intro = (
+            "Um aluno está estudando os tópicos listados abaixo e pediu um exemplo adicional para aprofundar o entendimento.\n"
+            "Crie um texto educativo em português com cerca de 5 minutos de leitura\n"
+            "(aproximadamente 650 a 800 palavras) que explique os conceitos com exemplos práticos."
+        )
+    elif attempt_number == 1:
         approach_instruction = (
             "Explique os conceitos com exemplos práticos do cotidiano. "
             "Inclua uma mini seção final com 3 dicas de como estudar esses assuntos."
+        )
+        prompt_intro = (
+            f"Um aluno errou as questões listadas abaixo (tentativa número {attempt_number}).\n"
+            "Crie um texto educativo em português com cerca de 5 minutos de leitura\n"
+            "(aproximadamente 650 a 800 palavras) que explique os conceitos envolvidos."
         )
     elif attempt_number == 2:
         approach_instruction = (
             "O aluno já tentou uma vez e errou novamente. Mude completamente a abordagem: "
             "use analogias criativas e metáforas para explicar os mesmos conceitos de outro ângulo. "
             "Conecte os conceitos à experiência de vida do aluno com uma narrativa ou comparação visual."
+        )
+        prompt_intro = (
+            f"Um aluno errou as questões listadas abaixo (tentativa número {attempt_number}).\n"
+            "Crie um texto educativo em português com cerca de 5 minutos de leitura\n"
+            "(aproximadamente 650 a 800 palavras) que explique os conceitos envolvidos."
         )
     else:
         approach_instruction = (
@@ -175,13 +196,16 @@ def generate_wrong_answers_study_text():
             "sem jargões, com um passo a passo numerado para cada conceito, "
             "e termine com um exercício mental guiado (sem ser o exercício do sistema)."
         )
+        prompt_intro = (
+            f"Um aluno errou as questões listadas abaixo (tentativa número {attempt_number}).\n"
+            "Crie um texto educativo em português com cerca de 5 minutos de leitura\n"
+            "(aproximadamente 650 a 800 palavras) que explique os conceitos envolvidos."
+        )
 
     try:
         prompt = f"""
 Você é um tutor especializado em personalização do aprendizado.
-Um aluno errou as questões listadas abaixo (tentativa número {attempt_number}).
-Crie um texto educativo em português com cerca de 5 minutos de leitura
-(aproximadamente 650 a 800 palavras) que explique os conceitos envolvidos.
+{prompt_intro}
 
 PERFIL DO ALUNO:
 {profile_summary}
@@ -189,10 +213,10 @@ PERFIL DO ALUNO:
 HISTÓRICO DE SESSÕES ANTERIORES DO ALUNO:
 {history_text}
 
-QUESTÕES QUE O ALUNO ERROU (apenas o enunciado):
+{"TÓPICOS DA SESSÃO (base para o exemplo):" if is_proactive else "QUESTÕES QUE O ALUNO ERROU (apenas o enunciado):"}
 {questions_text}
 
-ABORDAGEM PARA ESTA TENTATIVA ({attempt_number}ª vez):
+{"ABORDAGEM (exemplo proativo):" if is_proactive else f"ABORDAGEM PARA ESTA TENTATIVA ({attempt_number}ª vez):"}
 {approach_instruction}
 
 REGRAS OBRIGATÓRIAS:
