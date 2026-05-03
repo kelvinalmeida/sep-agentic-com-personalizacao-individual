@@ -116,11 +116,12 @@
 
                         <!-- Ações -->
                         <div class="mt-auto d-flex gap-2">
-                            <a href="/domains/{{ domain.id }}" class="btn btn-sm btn-secondary w-100">Ver Detalhes</a>
-                            <form action="/domains/delete/{{ domain.id }}" method="POST" class="w-100"
+                            <a href="/domains/{{ domain.id }}" class="btn btn-sm btn-secondary">Ver Detalhes</a>
+                            <a href="/domains/{{ domain.id }}/edit" class="btn btn-sm btn-warning">✏️ Editar</a>
+                            <form action="/domains/delete/{{ domain.id }}" method="POST"
                                 onsubmit="return confirm('Tem certeza que deseja deletar este domínio?');">
                                 <input type="hidden" name="_method" value="DELETE">
-                                <button type="submit" class="btn btn-sm btn-outline-danger w-100">🗑️ Deletar</button>
+                                <button type="submit" class="btn btn-sm btn-outline-danger">🗑️ Deletar</button>
                             </form>
                         </div>
                     </div>

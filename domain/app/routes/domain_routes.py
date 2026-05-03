@@ -254,6 +254,124 @@ def delete_domain(domain_id):
         cursor.close()
         conn.close()
 
+@domain_bp.route('/domains/<int:domain_id>/update', methods=['POST'])
+def update_domain(domain_id):
+    uploads_dir = get_uploads_dir()
+    conn = get_db_connection()
+    if conn is None:
+        return jsonify({"error": "Database connection failed"}), 503
+    cursor = conn.cursor()
+    try:
+        cursor.execute("SELECT id FROM domain WHERE id = %s", (domain_id,))
+        if not cursor.fetchone():
+            return jsonify({"error": "Domain not found"}), 404
+
+        name = request.form.get('name')
+        description = request.form.get('description')
+        cursor.execute("UPDATE domain SET name = %s, description = %s WHERE id = %s", (name, description, domain_id))
+
+        # Remove PDFs marcados para exclusão
+        for pdf_id in request.form.getlist('delete_pdf_ids'):
+            try:
+                pid = int(pdf_id)
+                cursor.execute("SELECT filename, path FROM pdf WHERE id = %s AND domain_id = %s", (pid, domain_id))
+                row = cursor.fetchone()
+                if row:
+                    fp = resolve_file_path(row['path'], row['filename'])
+                    if fp and os.path.exists(fp):
+                        try:
+                            os.remove(fp)
+                        except Exception as e:
+                            logging.warning("Falha ao remover PDF %s: %s", fp, e)
+                    cursor.execute("DELETE FROM pdf WHERE id = %s", (pid,))
+            except (ValueError, TypeError):
+                pass
+
+        # Remove links YouTube marcados
+        for yt_id in request.form.getlist('delete_youtube_ids'):
+            try:
+                cursor.execute("DELETE FROM video_youtube WHERE id = %s AND domain_id = %s", (int(yt_id), domain_id))
+            except (ValueError, TypeError):
+                pass
+
+        # Remove vídeos enviados marcados
+        for vid_id in request.form.getlist('delete_video_ids'):
+            try:
+                vid = int(vid_id)
+                cursor.execute("SELECT filename, path FROM video_upload WHERE id = %s AND domain_id = %s", (vid, domain_id))
+                row = cursor.fetchone()
+                if row:
+                    fp = resolve_file_path(row['path'], row['filename'])
+                    if fp and os.path.exists(fp):
+                        try:
+                            os.remove(fp)
+                        except Exception as e:
+                            logging.warning("Falha ao remover vídeo %s: %s", fp, e)
+                    cursor.execute("DELETE FROM video_upload WHERE id = %s", (vid,))
+            except (ValueError, TypeError):
+                pass
+
+        # Remove exercícios marcados
+        for ex_id in request.form.getlist('delete_exercise_ids'):
+            try:
+                cursor.execute("DELETE FROM exercise WHERE id = %s AND domain_id = %s", (int(ex_id), domain_id))
+            except (ValueError, TypeError):
+                pass
+
+        # Adiciona novos PDFs
+        for file in request.files.getlist("pdfs"):
+            if file and file.filename and file.filename.endswith('.pdf'):
+                orig = secure_filename(file.filename)
+                fname = build_unique_filename(uploads_dir, orig)
+                file.save(os.path.join(uploads_dir, fname))
+                cursor.execute(
+                    "INSERT INTO pdf (filename, path, domain_id) VALUES (%s, %s, %s)",
+                    (fname, os.path.join('uploads', fname), domain_id)
+                )
+
+        # Adiciona novos links YouTube
+        for yt_url in request.form.getlist('youtube_link'):
+            yt_url = yt_url.strip()
+            if yt_url:
+                cursor.execute("INSERT INTO video_youtube (url, domain_id) VALUES (%s, %s)", (yt_url, domain_id))
+
+        # Adiciona novos vídeos enviados
+        for video_file in request.files.getlist("video"):
+            if video_file and video_file.filename and video_file.filename.endswith('.mp4'):
+                orig = secure_filename(video_file.filename)
+                fname = build_unique_filename(uploads_dir, orig)
+                video_file.save(os.path.join(uploads_dir, fname))
+                cursor.execute(
+                    "INSERT INTO video_upload (filename, path, domain_id) VALUES (%s, %s, %s)",
+                    (fname, os.path.join('uploads', fname), domain_id)
+                )
+
+        # Adiciona novos exercícios
+        exercises_raw = request.form.get('exercises')
+        if exercises_raw:
+            for ex in json.loads(exercises_raw):
+                question = ex.get("question", "").strip()
+                options = ex.get("options", [])
+                correct = ex.get("correct", "").strip()
+                if question and options and correct:
+                    cursor.execute(
+                        "INSERT INTO exercise (question, options, correct, domain_id) VALUES (%s, %s, %s, %s)",
+                        (question, json.dumps(options), correct, domain_id)
+                    )
+
+        conn.commit()
+        return jsonify({"message": "Domain updated successfully!"}), 200
+
+    except Exception as e:
+        if conn:
+            conn.rollback()
+        logging.error("Erro ao atualizar domínio: %s", str(e))
+        return jsonify({"message": "Erro ao processar atualização", "error": str(e)}), 400
+    finally:
+        cursor.close()
+        conn.close()
+
+
 @domain_bp.route('/domains/<int:domain_id>', methods=['GET'])
 def get_domain(domain_id):
     conn = get_db_connection()

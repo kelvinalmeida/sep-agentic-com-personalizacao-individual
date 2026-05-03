@@ -133,6 +133,67 @@ def get_domain(current_user=None, domain_id=None):
     # return jsonify(domain), 200  # Retorna os detalhes do domínio em formato JSON
 
 
+@domain_bp.route("/domains/<int:domain_id>/edit", methods=["GET", "POST"])
+@token_required
+def edit_domain(current_user=None, domain_id=None):
+    if request.method == "GET":
+        try:
+            response = requests.get(f"{DOMAIN_URL}/domains/{domain_id}")
+            response.raise_for_status()
+            domain = response.json()
+        except RequestException:
+            flash("Falha ao carregar domínio.")
+            return redirect(url_for('domain.list_domains'))
+        return render_template('/domain/edit_domain.html', domain=domain)
+
+    # POST: coleta dados e encaminha ao serviço domain
+    name = request.form.get("name")
+    description = request.form.get("description")
+    youtube_links = request.form.getlist("videos_youtube")
+    files = request.files.getlist("pdfs")
+    videos = request.files.getlist("videos_uploaded")
+
+    exercises = []
+    index = 0
+    while True:
+        if f"exercises[{index}][question]" not in request.form:
+            break
+        question = request.form.get(f"exercises[{index}][question]")
+        correct = request.form.get(f"exercises[{index}][correct]")
+        options = []
+        opt_i = 0
+        while f"exercises[{index}][options][{opt_i}]" in request.form:
+            options.append(request.form.get(f"exercises[{index}][options][{opt_i}]"))
+            opt_i += 1
+        exercises.append({"question": question, "options": options, "correct": correct})
+        index += 1
+
+    data = {
+        'name': name,
+        'description': description,
+        'youtube_link': youtube_links,
+        'delete_pdf_ids': request.form.getlist("delete_pdf_ids"),
+        'delete_youtube_ids': request.form.getlist("delete_youtube_ids"),
+        'delete_video_ids': request.form.getlist("delete_video_ids"),
+        'delete_exercise_ids': request.form.getlist("delete_exercise_ids"),
+        'exercises': json.dumps(exercises),
+    }
+
+    files_payload = [('pdfs', (f.filename, f.stream, f.content_type)) for f in files if f.filename]
+    for vid in videos:
+        if vid.filename:
+            files_payload.append(('video', (vid.filename, vid.stream, vid.content_type)))
+
+    response = requests.post(f"{DOMAIN_URL}/domains/{domain_id}/update", data=data, files=files_payload if files_payload else None)
+
+    if response.ok:
+        flash("Domínio atualizado com sucesso!")
+        return redirect(url_for('domain.list_domains'))
+    else:
+        flash(f"Falha ao atualizar domínio. {response.status_code} - {response.text}")
+        return redirect(url_for('domain.edit_domain', domain_id=domain_id))
+
+
 @domain_bp.route("/domains/domains_json", methods=["GET"])
 def get_domains_json():
     try:

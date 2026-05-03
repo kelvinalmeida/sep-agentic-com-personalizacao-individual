@@ -29,12 +29,14 @@ def create_app():
     from app.routes.agente_strategies_routes import agente_strategies_bp
     from app.routes.agente_perso_individual import agente_perso_individual_bp
     from app.routes.agente_adaptive_tactic_routes import agente_adaptive_tactic_bp
+    from app.routes.agente_plan_routes import agente_plan_bp
 
     # Registrar o blueprint
     app.register_blueprint(strategies_bp)
     app.register_blueprint(agente_strategies_bp)
     app.register_blueprint(agente_perso_individual_bp)
     app.register_blueprint(agente_adaptive_tactic_bp)
+    app.register_blueprint(agente_plan_bp)
 
     # Inicializar extensões
     db.init_app(app)

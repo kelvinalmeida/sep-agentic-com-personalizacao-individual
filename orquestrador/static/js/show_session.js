@@ -116,6 +116,21 @@ document.addEventListener("DOMContentLoaded", () => {
         if (banner) banner.classList.add("d-none");
     }
 
+    function showSessionGoal(goalText) {
+        const banner = document.getElementById("session-goal-banner");
+        const text = document.getElementById("session-goal-text");
+        if (banner && text && goalText) {
+            text.textContent = goalText;
+            banner.classList.remove("d-none");
+            localStorage.setItem(`session_goal_${session_id}_${my_id}`, goalText);
+        }
+    }
+
+    function restoreSessionGoal() {
+        const stored = localStorage.getItem(`session_goal_${session_id}_${my_id}`);
+        if (stored) showSessionGoal(stored);
+    }
+
     function showAdaptiveLoadingState() {
         clearInterval(countdownInterval);
         const timerEl = document.getElementById("tacticTimer");
@@ -190,10 +205,60 @@ document.addEventListener("DOMContentLoaded", () => {
             </div>`;
     }
 
+    function renderPlanPanel(tacticSequence, strategyTactics, currentTacticIndex) {
+        const panel = document.getElementById('plan-panel');
+        if (!panel || !tacticSequence || !tacticSequence.length || !strategyTactics) return;
+
+        const currentPos = tacticSequence.indexOf(currentTacticIndex);
+
+        const items = tacticSequence.map((idx, pos) => {
+            const tactic = strategyTactics[idx];
+            if (!tactic) return '';
+            const name = tactic.name || `Tática ${idx + 1}`;
+            let icon, textClass, bgClass, strikeClass;
+            if (pos < currentPos) {
+                icon = '✅'; textClass = 'text-muted'; bgClass = ''; strikeClass = 'text-decoration-line-through';
+            } else if (idx === currentTacticIndex) {
+                icon = '▶️'; textClass = 'fw-bold text-primary'; bgClass = 'list-group-item-primary'; strikeClass = '';
+            } else {
+                icon = '⏳'; textClass = 'text-secondary'; bgClass = ''; strikeClass = '';
+            }
+            return `<li class="list-group-item d-flex align-items-center gap-2 py-2 ${bgClass}">
+                <span style="font-size:0.95rem">${icon}</span>
+                <span class="${textClass} ${strikeClass} small">${pos + 1}. ${name}</span>
+            </li>`;
+        }).join('');
+
+        panel.innerHTML = `
+            <div class="card shadow-sm" style="border-left: 4px solid #667eea; overflow: hidden;">
+                <div class="card-header py-2 px-3 fw-semibold small"
+                    style="background: linear-gradient(135deg,#667eea15,#764ba215);">
+                    📋 Plano personalizado desta sessão
+                </div>
+                <ul class="list-group list-group-flush">${items}</ul>
+            </div>`;
+        panel.classList.remove('d-none');
+    }
+
     function advanceStudentTactic() {
         if (adaptiveTacticEnabled) {
-            showAdaptiveLoadingState();
-            return randomDelay(3000)
+            const hasPlan = !!localStorage.getItem(`plan_sequence_${session_id}_${my_id}`);
+            if (hasPlan) {
+                const tacticArea = document.getElementById("tatic_here");
+                if (tacticArea) {
+                    tacticArea.innerHTML = `
+                        <div class="text-center py-4">
+                            <div class="spinner-border text-primary" style="width:2rem;height:2rem;" role="status">
+                                <span class="visually-hidden">Carregando...</span>
+                            </div>
+                            <p class="mt-2 text-muted small">Carregando próxima atividade…</p>
+                        </div>`;
+                }
+            } else {
+                showAdaptiveLoadingState();
+            }
+            const delay = hasPlan ? Promise.resolve() : randomDelay(3000);
+            return delay
             .then(() => fetch('/orchestrator/agent/adaptive_next_tactic', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
@@ -600,32 +665,64 @@ document.addEventListener("DOMContentLoaded", () => {
                                                 localStorage.removeItem(`reuso_study_text_${session_id}_${my_id}`);
                                                 localStorage.removeItem(`reuso_attempt_${session_id}_${my_id}_${activeTacticIndex || 0}`);
                                                 if (adaptiveTacticEnabled) {
-                                                    showAdaptiveLoadingState();
-                                                    // activeTacticIndex é o índice da tática que o aluno ACABOU de concluir.
-                                                    // Delay aleatório 0-3s para escalonar chamadas simultâneas.
+                                                    const _hasPlan = !!localStorage.getItem(`plan_sequence_${session_id}_${my_id}`);
                                                     const _completedIdx = activeTacticIndex;
-                                                    randomDelay(3000)
-                                                    .then(() => fetch('/orchestrator/agent/adaptive_next_tactic', {
-                                                        method: 'POST',
-                                                        headers: { 'Content-Type': 'application/json' },
-                                                        body: JSON.stringify({ student_id: my_id, session_id: session_id, completed_tactic_index: _completedIdx })
-                                                    }))
-                                                    .then(r => r.json())
-                                                    .then(aiData => {
-                                                        if (aiData.reasoning) {
-                                                            localStorage.setItem(`adaptive_reasoning_${session_id}_${my_id}`, aiData.reasoning);
+
+                                                    const _doReusoTransition = (planReady) => {
+                                                        if (planReady) {
+                                                            const _area = document.getElementById("tatic_here");
+                                                            if (_area) {
+                                                                _area.innerHTML = `<div class="text-center py-4">
+                                                                    <div class="spinner-border text-primary" style="width:2rem;height:2rem;" role="status"><span class="visually-hidden">Carregando...</span></div>
+                                                                    <p class="mt-2 text-muted small">Carregando próxima atividade…</p>
+                                                                </div>`;
+                                                            }
                                                         }
-                                                        if (aiData.next_tactic_name === 'Sessão Concluída') {
-                                                            fetch('/orchestrator/agent/save_session_memory', {
-                                                                method: 'POST',
-                                                                headers: { 'Content-Type': 'application/json' },
-                                                                body: JSON.stringify({ student_id: my_id, session_id: session_id })
-                                                            }).catch(() => {});
-                                                        }
-                                                        activeTacticIndex = null;
-                                                        setTimeout(() => fetchCurrentTactic(session_id), 500);
-                                                    })
-                                                    .catch(() => { activeTacticIndex = null; setTimeout(() => fetchCurrentTactic(session_id), 1500); });
+                                                        const _delay = planReady ? Promise.resolve() : randomDelay(3000);
+                                                        _delay
+                                                        .then(() => fetch('/orchestrator/agent/adaptive_next_tactic', {
+                                                            method: 'POST',
+                                                            headers: { 'Content-Type': 'application/json' },
+                                                            body: JSON.stringify({ student_id: my_id, session_id: session_id, completed_tactic_index: _completedIdx })
+                                                        }))
+                                                        .then(r => r.json())
+                                                        .then(aiData => {
+                                                            if (aiData.reasoning) {
+                                                                localStorage.setItem(`adaptive_reasoning_${session_id}_${my_id}`, aiData.reasoning);
+                                                            }
+                                                            if (aiData.next_tactic_name === 'Sessão Concluída') {
+                                                                fetch('/orchestrator/agent/save_session_memory', {
+                                                                    method: 'POST',
+                                                                    headers: { 'Content-Type': 'application/json' },
+                                                                    body: JSON.stringify({ student_id: my_id, session_id: session_id })
+                                                                }).catch(() => {});
+                                                            }
+                                                            activeTacticIndex = null;
+                                                            setTimeout(() => fetchCurrentTactic(session_id), 500);
+                                                        })
+                                                        .catch(() => { activeTacticIndex = null; setTimeout(() => fetchCurrentTactic(session_id), 1500); });
+                                                    };
+
+                                                    if (!_hasPlan) {
+                                                        // Primeiro exercício concluído: planeja a sessão com maestria real
+                                                        showAdaptiveLoadingState();
+                                                        fetch('/orchestrator/agent/replan_session', {
+                                                            method: 'POST',
+                                                            headers: { 'Content-Type': 'application/json' },
+                                                            body: JSON.stringify({ student_id: my_id, session_id: session_id, is_replan: false })
+                                                        })
+                                                        .then(r => r.json())
+                                                        .then(planData => {
+                                                            if (planData.overall_goal) showSessionGoal(planData.overall_goal);
+                                                            if (planData.new_sequence) {
+                                                                localStorage.setItem(`plan_sequence_${session_id}_${my_id}`, JSON.stringify(planData.new_sequence));
+                                                            }
+                                                            _doReusoTransition(true);
+                                                        })
+                                                        .catch(() => _doReusoTransition(false));
+                                                    } else {
+                                                        _doReusoTransition(true);
+                                                    }
                                                 } else {
                                                     setTimeout(() => fetchCurrentTactic(session_id), 1500);
                                                 }
@@ -707,6 +804,23 @@ document.addEventListener("DOMContentLoaded", () => {
                                                 const _attemptKey = `reuso_attempt_${session_id}_${studentId}_${activeTacticIndex || 0}`;
                                                 const _attemptNumber = parseInt(localStorage.getItem(_attemptKey) || '0') + 1;
                                                 localStorage.setItem(_attemptKey, _attemptNumber.toString());
+
+                                                // Na 2ª falha, replaneja o restante da sessão em background
+                                                if (_attemptNumber === 2 && adaptiveTacticEnabled) {
+                                                    fetch('/orchestrator/agent/replan_session', {
+                                                        method: 'POST',
+                                                        headers: { 'Content-Type': 'application/json' },
+                                                        body: JSON.stringify({ student_id: my_id, session_id: session_id, executed_tactic_indices: [] })
+                                                    })
+                                                    .then(r => r.json())
+                                                    .then(replanData => {
+                                                        if (replanData.overall_goal) showSessionGoal(replanData.overall_goal);
+                                                        if (replanData.new_sequence) {
+                                                            localStorage.setItem(`plan_sequence_${session_id}_${my_id}`, JSON.stringify(replanData.new_sequence));
+                                                        }
+                                                    })
+                                                    .catch(() => {});
+                                                }
 
                                                 fetch('/orchestrator/agent/generate_wrong_answers_text', {
                                                     method: 'POST',
@@ -1052,7 +1166,13 @@ document.addEventListener("DOMContentLoaded", () => {
                     localStorage.removeItem(`reuso_study_text_${session_id}_${my_id}`);
                     localStorage.removeItem(`reuso_cooldown_end_${session_id}_${my_id}`);
                     localStorage.removeItem(`adaptive_reasoning_${session_id}_${my_id}`);
+                    localStorage.removeItem(`session_goal_${session_id}_${my_id}`);
+                    localStorage.removeItem(`plan_sequence_${session_id}_${my_id}`);
                     hideAdaptiveReasoning();
+                    const goalBanner = document.getElementById("session-goal-banner");
+                    if (goalBanner) goalBanner.classList.add("d-none");
+                    const planPanelEl = document.getElementById('plan-panel');
+                    if (planPanelEl) { planPanelEl.innerHTML = ''; planPanelEl.classList.add('d-none'); }
                     activeTacticIndex = null;
                     showStudentStartArea();
                     const btn = document.getElementById("studentStartBtn");
@@ -1077,6 +1197,17 @@ document.addEventListener("DOMContentLoaded", () => {
 
                 if (data.tactic && data.session_status === 'in-progress') {
                     showStudentTacticArea();
+
+                    // Restaura objetivo da sessão ao recarregar
+                    if (adaptiveTacticEnabled) restoreSessionGoal();
+
+                    // Renderiza painel do plano se existir
+                    if (adaptiveTacticEnabled) {
+                        const _storedSeq = localStorage.getItem(`plan_sequence_${session_id}_${my_id}`);
+                        if (_storedSeq) {
+                            try { renderPlanPanel(JSON.parse(_storedSeq), data.strategy_tactics, data.current_tactic_index); } catch(e) {}
+                        }
+                    }
 
                     // Restaura maestria ao recarregar a página (leitura simples, sem LLM)
                     if (my_id) {
@@ -1239,35 +1370,7 @@ document.addEventListener("DOMContentLoaded", () => {
             }).then(response => {
                 if (response.ok) {
                     showStudentTacticArea();
-                    if (adaptiveTacticEnabled) {
-                        // IA escolhe qual tática iniciar (mesmo a primeira).
-                        // Delay aleatório 0-3s para escalonar chamadas de múltiplos alunos simultâneos.
-                        showAdaptiveLoadingState();
-                        randomDelay(3000)
-                        .then(() => fetch('/orchestrator/agent/adaptive_next_tactic', {
-                            method: 'POST',
-                            headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify({ student_id: my_id, session_id: session_id, is_first: true })
-                        }))
-                        .then(r => r.json())
-                        .then(aiData => {
-                            if (aiData.reasoning) {
-                                localStorage.setItem(`adaptive_reasoning_${session_id}_${my_id}`, aiData.reasoning);
-                            }
-                            if (aiData.next_tactic_name === 'Sessão Concluída') {
-                                fetch('/orchestrator/agent/save_session_memory', {
-                                    method: 'POST',
-                                    headers: { 'Content-Type': 'application/json' },
-                                    body: JSON.stringify({ student_id: my_id, session_id: session_id })
-                                }).catch(() => {});
-                            }
-                            activeTacticIndex = null;
-                            fetchCurrentTactic(session_id);
-                        })
-                        .catch(() => { activeTacticIndex = null; fetchCurrentTactic(session_id); });
-                    } else {
-                        fetchCurrentTactic(session_id);
-                    }
+                    fetchCurrentTactic(session_id);
                 } else {
                     studentStartBtn.disabled = false;
                     alert("Erro ao iniciar a sessão. Tente novamente.");

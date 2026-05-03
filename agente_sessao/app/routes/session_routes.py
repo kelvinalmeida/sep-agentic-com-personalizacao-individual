@@ -125,6 +125,7 @@ def ensure_student_progress_table(conn):
     _run_migration(conn, "ALTER TABLE student_session_progress ADD COLUMN IF NOT EXISTS student_started BOOLEAN DEFAULT TRUE")
     _run_migration(conn, "ALTER TABLE student_session_progress ADD COLUMN IF NOT EXISTS should_end_session BOOLEAN DEFAULT FALSE")
     _run_migration(conn, "ALTER TABLE student_session_progress ADD COLUMN IF NOT EXISTS executed_tactic_indices TEXT DEFAULT '[]'")
+    _run_migration(conn, "ALTER TABLE student_session_progress ADD COLUMN IF NOT EXISTS session_plan TEXT DEFAULT NULL")
     # Unique constraint needed for ON CONFLICT (student_id, session_id, tactic_index) in submit_answer
     _run_migration(conn, "ALTER TABLE verified_answers ADD CONSTRAINT uq_verified_answers_student_session_tactic UNIQUE (student_id, session_id, tactic_index)")
 
@@ -581,11 +582,11 @@ def student_start_own(session_id, student_id):
         ensure_student_progress_table(conn)
         with conn.cursor() as cur:
             cur.execute("""
-                INSERT INTO student_session_progress (session_id, student_id, current_tactic_index, tactic_started_at, student_started, should_end_session, executed_tactic_indices)
-                VALUES (%s, %s, 0, %s, TRUE, FALSE, '[]')
+                INSERT INTO student_session_progress (session_id, student_id, current_tactic_index, tactic_started_at, student_started, should_end_session, executed_tactic_indices, session_plan)
+                VALUES (%s, %s, 0, %s, TRUE, FALSE, '[]', NULL)
                 ON CONFLICT (session_id, student_id) DO UPDATE
                 SET current_tactic_index = 0, tactic_started_at = EXCLUDED.tactic_started_at,
-                    student_started = TRUE, should_end_session = FALSE, executed_tactic_indices = '[]'
+                    student_started = TRUE, should_end_session = FALSE, executed_tactic_indices = '[]', session_plan = NULL
             """, (session_id, str(student_id), now))
             conn.commit()
     return jsonify({"success": True, "tactic_started_at": now.isoformat()}), 200
@@ -597,7 +598,7 @@ def get_student_tactic_index(session_id, student_id):
         ensure_student_progress_table(conn)
         with conn.cursor() as cur:
             cur.execute("""
-                SELECT current_tactic_index, tactic_started_at, student_started, executed_tactic_indices
+                SELECT current_tactic_index, tactic_started_at, student_started, executed_tactic_indices, session_plan
                 FROM student_session_progress
                 WHERE session_id = %s AND student_id = %s
             """, (session_id, str(student_id)))
@@ -611,10 +612,11 @@ def get_student_tactic_index(session_id, student_id):
                     "current_tactic_index": row['current_tactic_index'],
                     "tactic_started_at": row['tactic_started_at'].isoformat() if row['tactic_started_at'] else None,
                     "student_started": bool(row['student_started']),
-                    "executed_tactic_indices": executed
+                    "executed_tactic_indices": executed,
+                    "session_plan": row['session_plan'],
                 }), 200
             # Sem registro: aluno ainda não entrou na sessão
-            return jsonify({"current_tactic_index": 0, "tactic_started_at": None, "student_started": False, "executed_tactic_indices": []}), 200
+            return jsonify({"current_tactic_index": 0, "tactic_started_at": None, "student_started": False, "executed_tactic_indices": [], "session_plan": None}), 200
 
 
 @session_bp.route('/sessions/<int:session_id>/student/<string:student_id>/set_tactic', methods=['POST'])
@@ -624,11 +626,19 @@ def set_student_tactic(session_id, student_id):
     if new_index is None:
         return jsonify({"error": "tactic_index is required"}), 400
     executed_indices = data.get('executed_tactic_indices')
+    session_plan = data.get('session_plan')  # optional: raw JSON string
     now = datetime.utcnow()
     with get_db_connection() as conn:
         ensure_student_progress_table(conn)
         with conn.cursor() as cur:
-            if executed_indices is not None:
+            if executed_indices is not None and session_plan is not None:
+                cur.execute("""
+                    UPDATE student_session_progress
+                    SET current_tactic_index = %s, tactic_started_at = %s, should_end_session = FALSE,
+                        executed_tactic_indices = %s, session_plan = %s
+                    WHERE session_id = %s AND student_id = %s
+                """, (new_index, now, json.dumps(executed_indices), session_plan, session_id, str(student_id)))
+            elif executed_indices is not None:
                 cur.execute("""
                     UPDATE student_session_progress
                     SET current_tactic_index = %s, tactic_started_at = %s, should_end_session = FALSE,
@@ -643,6 +653,25 @@ def set_student_tactic(session_id, student_id):
                 """, (new_index, now, session_id, str(student_id)))
             conn.commit()
     return jsonify({"success": True, "current_tactic_index": new_index}), 200
+
+
+@session_bp.route('/sessions/<int:session_id>/student/<string:student_id>/update_session_plan', methods=['POST'])
+def update_student_session_plan(session_id, student_id):
+    """Atualiza apenas o session_plan sem alterar a tática atual (usado no replanejamento)."""
+    data = request.get_json() or {}
+    session_plan = data.get('session_plan')
+    if session_plan is None:
+        return jsonify({"error": "session_plan is required"}), 400
+    with get_db_connection() as conn:
+        ensure_student_progress_table(conn)
+        with conn.cursor() as cur:
+            cur.execute("""
+                UPDATE student_session_progress
+                SET session_plan = %s
+                WHERE session_id = %s AND student_id = %s
+            """, (session_plan, session_id, str(student_id)))
+            conn.commit()
+    return jsonify({"success": True}), 200
 
 
 @session_bp.route('/sessions/<int:session_id>/student/<string:student_id>/set_end_flag', methods=['POST'])
