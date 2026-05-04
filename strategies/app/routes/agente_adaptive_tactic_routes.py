@@ -37,6 +37,8 @@ def decide_adaptive_tactic():
     remaining_tactics = data.get('remaining_tactics', [])   # [{"index": i, "name": ..., "description": ...}]
     executed_tactic_indices = data.get('executed_tactic_indices', [])
     chat_messages = data.get('chat_messages', [])
+    student_history = data.get('student_history', '')
+    student_mastery = data.get('student_mastery', '')
 
     if not remaining_tactics:
         return jsonify({"error": "remaining_tactics é obrigatório e não pode estar vazio"}), 400
@@ -50,6 +52,8 @@ def decide_adaptive_tactic():
     )
     done_text = ", ".join(str(i) for i in executed_tactic_indices) if executed_tactic_indices else "nenhuma ainda"
     chat_text = "\n".join(f"- {m}" for m in chat_messages) if chat_messages else "Sem mensagens recentes."
+    history_text = student_history if student_history else "Primeira sessão — sem histórico anterior."
+    mastery_text = student_mastery if student_mastery else "Sem dados de maestria ainda (primeira sessão)."
 
     valid_indices = [t['index'] for t in remaining_tactics]
 
@@ -70,6 +74,12 @@ PERFIL DA TURMA:
 DESEMPENHO DO ALUNO NOS EXERCÍCIOS:
 {exercise_scores}
 
+HISTÓRICO DE SESSÕES ANTERIORES DO ALUNO:
+{history_text}
+
+MAESTRIA POR CONCEITO (menor % = maior necessidade de reforço):
+{mastery_text}
+
 ÚLTIMAS MENSAGENS DO ALUNO NO CHAT:
 {chat_text}
 
@@ -88,6 +98,7 @@ Responda APENAS em JSON neste formato exato:
 REGRAS OBRIGATÓRIAS:
 - O índice deve ser EXATAMENTE um dos valores: {valid_indices}
 - Considere o perfil do aluno, seu desempenho e suas mensagens no chat para personalizar a escolha.
+- Priorize táticas que trabalhem os conceitos com menor maestria.
 - Priorize táticas que supram as dificuldades identificadas do aluno.
 """
 
