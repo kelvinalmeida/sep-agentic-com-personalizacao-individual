@@ -118,3 +118,17 @@ SELECT setval('general_message_id_seq', (SELECT MAX(id) FROM general_message));
 
 -- CORREÇÃO: Uso de COALESCE para evitar erro se a tabela estiver vazia
 SELECT setval('private_message_id_seq', COALESCE((SELECT MAX(id) FROM private_message), 0) + 1, false);
+
+-- Relatórios de desempenho gerados pelo agente autônomo para professores
+CREATE TABLE IF NOT EXISTS teacher_reports (
+    id SERIAL PRIMARY KEY,
+    teacher_id INTEGER NOT NULL,
+    teacher_name VARCHAR(255),
+    performance_summary TEXT NOT NULL,
+    tips TEXT NOT NULL,
+    sessions_analyzed INTEGER DEFAULT 0,
+    generated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    feedback TEXT,
+    feedback_rating INTEGER,
+    feedback_at TIMESTAMP
+);
