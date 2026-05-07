@@ -24,11 +24,13 @@ def create_app():
     from .routes.students_routes import student_bp
     from .routes.teachers_routes import teachers_bp
     from .routes.login import auth_bp
-    from .routes.agente_user_routes import agente_user_bp    
+    from .routes.agente_user_routes import agente_user_bp
+    from .routes.agente_proactive_routes import agente_proactive_bp
 
     app.register_blueprint(student_bp)
     app.register_blueprint(teachers_bp)
     app.register_blueprint(auth_bp)
     app.register_blueprint(agente_user_bp)
+    app.register_blueprint(agente_proactive_bp)
 
     return app

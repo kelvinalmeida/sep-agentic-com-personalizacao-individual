@@ -19,9 +19,22 @@ def create_student():
 
     if request.method == "POST":
         try:
-            # Garante que o request tem JSON antes de acessar
             if not request.is_json:
                 return jsonify({"error": "Content-Type must be application/json"}), 415
+
+            # Migração automática das colunas de TCLE
+            for col_def in [
+                "tcle_data_aceite TIMESTAMP",
+                "tcle_ip VARCHAR(60)",
+                "tcle_user_agent TEXT",
+                "tcle_versao VARCHAR(20)",
+            ]:
+                col_name = col_def.split()[0]
+                try:
+                    cursor.execute(f"ALTER TABLE student ADD COLUMN IF NOT EXISTS {col_def};")
+                    conn.commit()
+                except Exception:
+                    conn.rollback()
 
             name = request.json.get("name")
             age = request.json.get("age")
@@ -30,25 +43,27 @@ def create_student():
             email = request.json.get("email")
             username = request.json.get("username")
             password = request.json.get("password")
-
-            # --- NOVOS CAMPOS ---
             pref_content_type = request.json.get("pref_content_type")
             pref_communication = request.json.get("pref_communication")
             pref_receive_email = request.json.get("pref_receive_email")
-            
-            # Atualiza a Query SQL para incluir as 3 novas colunas
+            tcle_data_aceite = request.json.get("tcle_data_aceite")
+            tcle_ip = request.json.get("tcle_ip")
+            tcle_user_agent = request.json.get("tcle_user_agent")
+            tcle_versao = request.json.get("tcle_versao", "1.0")
+
             add_student_query = """
                 INSERT INTO student (
                     name, age, course, type, email, username, password_hash,
-                    pref_content_type, pref_communication, pref_receive_email
+                    pref_content_type, pref_communication, pref_receive_email,
+                    tcle_data_aceite, tcle_ip, tcle_user_agent, tcle_versao
                 )
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s);
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s);
             """
-            
-            # Atualiza a tupla de parâmetros com os novos valores no final
+
             cursor.execute(add_student_query, (
                 name, age, course, type, email, username, password,
-                pref_content_type, pref_communication, pref_receive_email
+                pref_content_type, pref_communication, pref_receive_email,
+                tcle_data_aceite, tcle_ip, tcle_user_agent, tcle_versao
             ))
             
             conn.commit()
