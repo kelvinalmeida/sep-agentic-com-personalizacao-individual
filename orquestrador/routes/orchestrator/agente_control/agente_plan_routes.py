@@ -241,10 +241,10 @@ TÁTICAS DISPONÍVEIS (todos os índices {valid_indices} devem aparecer no plano
 {tactics_text}
 
 INSTRUÇÕES:
-1. Use as ferramentas para coletar as informações que julgar relevantes sobre o aluno.
-2. Não é obrigatório chamar todas as ferramentas — use seu julgamento.
+1. OBRIGATÓRIO: chame ao menos get_student_profile e get_student_mastery antes de criar o plano.
+2. Use as demais ferramentas (histórico, notas, chat) conforme julgar relevante.
 3. Respeite obrigatoriamente as RESTRIÇÕES PEDAGÓGICAS acima ao ordenar as táticas.
-4. Quando tiver informações suficientes, chame create_session_plan com o plano final.
+4. Somente após coletar dados do aluno, chame create_session_plan com o plano final.
 5. O plano deve conter EXATAMENTE os índices {valid_indices}, cada um UMA única vez.
 6. Priorize conceitos com menor maestria (menor % = maior necessidade de reforço)."""
 
@@ -408,18 +408,24 @@ INSTRUÇÕES:
         "get_chat_messages": _exec_get_chat_messages,
     }
 
+    # On the first iteration, exclude create_session_plan so the agent is
+    # forced to gather at least one piece of student-specific data before planning.
+    _data_tools_only = [t for t in TOOLS if t['function']['name'] != 'create_session_plan']
+
     client = _build_groq_client()
     messages = [
         {"role": "system", "content": system_prompt},
-        {"role": "user", "content": "Crie o plano de sessão personalizado para este aluno."}
+        {"role": "user", "content": "Colete os dados do aluno e crie o plano de sessão personalizado para ele."}
     ]
 
+    data_gathered = False
     max_iterations = 10
     for iteration in range(max_iterations):
+        tools_for_call = _data_tools_only if not data_gathered else TOOLS
         response = client.chat.completions.create(
             model="llama-3.3-70b-versatile",
             messages=messages,
-            tools=TOOLS,
+            tools=tools_for_call,
             tool_choice="required",
             temperature=0.3
         )
@@ -449,6 +455,7 @@ INSTRUÇÕES:
                 })
             elif fn_name in tool_executors:
                 result = tool_executors[fn_name]()
+                data_gathered = True
                 tool_results.append({
                     "role": "tool",
                     "tool_call_id": tool_call.id,
@@ -662,3 +669,84 @@ def replan_session():
     except Exception as e:
         logging.error("Erro em replan_session student_id=%s: %s", student_id, str(e))
         return jsonify({"error": "Falha no replanejamento"}), 500
+
+
+@agente_plan_bp.route('/orchestrator/teacher/student_plans', methods=['GET'])
+def get_student_plans():
+    """Retorna os planos personalizados de todos os alunos de uma sessão."""
+    session_id = request.args.get('session_id')
+    if not session_id:
+        return jsonify({"error": "session_id é obrigatório"}), 400
+
+    try:
+        sess_resp = requests.get(f"{CONTROL_URL}/sessions/{session_id}", timeout=10)
+        if sess_resp.status_code != 200:
+            return jsonify({"error": "Sessão não encontrada"}), 404
+        session_data = sess_resp.json()
+
+        student_ids = session_data.get('students', [])
+        strategy_ids = session_data.get('strategies', [])
+
+        tactics_map = {}
+        if strategy_ids:
+            try:
+                sr = requests.get(f"{STRATEGIES_URL}/strategies/{strategy_ids[0]}", timeout=10)
+                if sr.status_code == 200:
+                    tactics = sr.json().get('tatics', [])
+                    tactics_map = {i: t.get('name', f'Tática {i}') for i, t in enumerate(tactics)}
+            except Exception:
+                pass
+
+        student_names = {}
+        if student_ids:
+            try:
+                nr = requests.get(
+                    f"{USER_URL}/students/ids_to_usernames",
+                    params={'ids': student_ids},
+                    timeout=10
+                )
+                if nr.status_code == 200:
+                    for s in nr.json().get('ids_with_usernames', []):
+                        student_names[str(s['id'])] = s['username']
+            except Exception:
+                pass
+
+        plans = []
+        for student_id in student_ids:
+            try:
+                pr = requests.get(
+                    f"{CONTROL_URL}/sessions/{session_id}/student/{student_id}/tactic_index",
+                    timeout=10
+                )
+                if pr.status_code != 200:
+                    continue
+                raw_plan = pr.json().get('session_plan')
+                if not raw_plan:
+                    continue
+
+                plan_data = json.loads(raw_plan) if isinstance(raw_plan, str) else raw_plan
+                tactic_sequence = plan_data.get('tactic_sequence', [])
+                tactic_reasons = plan_data.get('tactic_reasons', {})
+
+                plans.append({
+                    'student_id': str(student_id),
+                    'student_name': student_names.get(str(student_id), f'Aluno {student_id}'),
+                    'overall_goal': plan_data.get('overall_goal', ''),
+                    'tactic_sequence': [
+                        {
+                            'index': i,
+                            'name': tactics_map.get(i, f'Tática {i}'),
+                            'reason': tactic_reasons.get(str(i), ''),
+                        }
+                        for i in tactic_sequence
+                    ],
+                    'guardrail_violations': plan_data.get('guardrail_violations', []),
+                })
+            except Exception as e:
+                logging.warning("Erro ao buscar plano student_id=%s: %s", student_id, e)
+
+        return jsonify(plans), 200
+
+    except Exception as e:
+        logging.error("Erro em get_student_plans session_id=%s: %s", session_id, e)
+        return jsonify({"error": "Falha ao buscar planos"}), 500

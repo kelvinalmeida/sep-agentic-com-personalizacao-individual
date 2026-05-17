@@ -43,6 +43,7 @@ def generate_reports_for_all_teachers(app):
         from openai import OpenAI
 
         logging.info("[Scheduler] Iniciando geração de relatórios para professores")
+        _migrate_session_alerts_schema(db)
 
         try:
             teachers_resp = requests.get(f"{USER_URL}/teachers", timeout=15)
@@ -162,6 +163,32 @@ def _generate_alert_message(client, concept, mastery_pct=None, score=None, alert
 def _migrate_session_alerts_schema(db):
     from sqlalchemy import text
     migrations = [
+        """CREATE TABLE IF NOT EXISTS teacher_reports (
+            id SERIAL PRIMARY KEY,
+            teacher_id INTEGER NOT NULL,
+            teacher_name VARCHAR(255),
+            performance_summary TEXT NOT NULL,
+            tips TEXT NOT NULL,
+            sessions_analyzed INTEGER DEFAULT 0,
+            generated_at TIMESTAMP DEFAULT NOW(),
+            feedback TEXT,
+            feedback_rating INTEGER,
+            feedback_at TIMESTAMP
+        )""",
+        """CREATE TABLE IF NOT EXISTS session_alerts (
+            id SERIAL PRIMARY KEY,
+            session_id INTEGER NOT NULL,
+            student_id INTEGER,
+            student_name VARCHAR(255),
+            student_email VARCHAR(255),
+            alert_type VARCHAR(50) NOT NULL DEFAULT 'mastery',
+            concept VARCHAR(255),
+            mastery_pct FLOAT,
+            score INTEGER,
+            answer_id INTEGER,
+            message TEXT NOT NULL,
+            created_at TIMESTAMP DEFAULT NOW()
+        )""",
         "ALTER TABLE session_alerts ADD COLUMN IF NOT EXISTS student_name VARCHAR(255)",
         "ALTER TABLE session_alerts ADD COLUMN IF NOT EXISTS student_email VARCHAR(255)",
         "ALTER TABLE session_alerts ADD COLUMN IF NOT EXISTS alert_type VARCHAR(50) DEFAULT 'mastery'",
@@ -194,7 +221,7 @@ def check_student_mastery_alerts(app):
             logging.error("[AlertScheduler] Erro ao buscar sessões: %s", e)
             return
 
-        active_sessions = [s for s in all_sessions if s.get('status') == 'started']
+        active_sessions = [s for s in all_sessions if s.get('status') == 'in-progress']
         if not active_sessions:
             return
 
@@ -261,8 +288,12 @@ def check_student_mastery_alerts(app):
             # ── Gatilho 2: Nota baixa < 70% (material personalizado enviado) ──
             for answer in verified_answers:
                 try:
-                    score = answer.get('score', 100)
-                    if score >= 70:
+                    score_raw = answer.get('score', 0)
+                    answers_list = answer.get('answers') or []
+                    total_q = len(answers_list) if answers_list else 1
+                    score_pct = int((score_raw / total_q) * 100)
+
+                    if score_pct >= 70:
                         continue
 
                     answer_id = answer.get('id')
@@ -278,7 +309,7 @@ def check_student_mastery_alerts(app):
 
                     name, email = _fetch_student_contact(student_id)
                     tactic_index = answer.get('tactic_index', '?')
-                    msg = _generate_alert_message(client, f"tática {tactic_index}", score=score, alert_type='low_score')
+                    msg = _generate_alert_message(client, f"tática {tactic_index}", score=score_pct, alert_type='low_score')
 
                     db.session.add(SessionAlert(
                         session_id=session_id,
@@ -286,13 +317,13 @@ def check_student_mastery_alerts(app):
                         student_name=name,
                         student_email=email,
                         alert_type='low_score',
-                        score=score,
+                        score=score_pct,
                         answer_id=int(answer_id) if answer_id else None,
                         message=msg,
                     ))
                     db.session.commit()
-                    logging.info("[AlertScheduler] Alerta nota baixa: sessão=%s aluno=%s score=%s",
-                                 session_id, student_id, score)
+                    logging.info("[AlertScheduler] Alerta nota baixa: sessão=%s aluno=%s score=%s%%",
+                                 session_id, student_id, score_pct)
 
                 except Exception as e:
                     logging.error("[AlertScheduler] Erro nota baixa sessão=%s: %s", session_id, e)
