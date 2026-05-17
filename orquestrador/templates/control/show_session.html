@@ -179,6 +179,64 @@
                 font-size: 0.95rem;
             }
         }
+
+        /* === Painel de Alertas do Professor === */
+        #teacher-alerts-btn {
+            position: fixed;
+            top: 16px;
+            right: 20px;
+            z-index: 1050;
+            width: 48px;
+            height: 48px;
+            border-radius: 50%;
+            background: linear-gradient(135deg, #f59e0b, #d97706);
+            border: none;
+            color: white;
+            font-size: 1.2rem;
+            box-shadow: 0 4px 12px rgba(245,158,11,0.4);
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            transition: transform 0.2s;
+        }
+        #teacher-alerts-btn:hover { transform: scale(1.08); }
+        #alerts-badge {
+            position: absolute;
+            top: -4px;
+            right: -4px;
+            background: #dc2626;
+            color: white;
+            border-radius: 50%;
+            width: 20px;
+            height: 20px;
+            font-size: 0.65rem;
+            font-weight: bold;
+            display: none;
+            align-items: center;
+            justify-content: center;
+        }
+        #teacher-alerts-panel {
+            position: fixed;
+            top: 72px;
+            right: 20px;
+            width: 360px;
+            max-height: 480px;
+            overflow-y: auto;
+            z-index: 1049;
+            display: none;
+            box-shadow: 0 8px 24px rgba(0,0,0,0.18);
+            border-radius: 12px;
+            border: none;
+        }
+        #teacher-alerts-panel .alert-card {
+            border-left: 4px solid #f59e0b;
+            background: #fffbeb;
+            border-radius: 6px;
+            padding: 10px 12px;
+            margin-bottom: 8px;
+            font-size: 0.85rem;
+        }
     </style>
 </head>
 
@@ -686,6 +744,366 @@
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
 
     <script src="{{ url_for('static', filename='js/show_session.js') }}"></script>
+
+    {% if current_user.type == 'student' %}
+    <!-- ===== TUTOR IA FLUTUANTE — SESSÃO ===== -->
+    <div id="fc-wrapper" style="position:fixed;bottom:24px;right:24px;z-index:9999;">
+
+        <button id="fc-toggle" onclick="fcToggle()" title="Abrir Tutor IA desta Sessão"
+            style="width:62px;height:62px;border-radius:50%;
+                   background:linear-gradient(135deg,#0d6efd,#6610f2);
+                   color:white;border:none;font-size:1.5rem;
+                   box-shadow:0 4px 18px rgba(13,110,253,0.45);
+                   cursor:pointer;position:relative;transition:transform 0.2s;"
+            onmouseover="this.style.transform='scale(1.08)'"
+            onmouseout="this.style.transform='scale(1)'">
+            💬
+            <span id="fc-badge"
+                style="display:none;position:absolute;top:-3px;right:-3px;
+                       background:#dc3545;color:white;border-radius:50%;
+                       width:20px;height:20px;font-size:0.65rem;font-weight:700;
+                       line-height:20px;text-align:center;border:2px solid white;">!</span>
+        </button>
+
+        <div id="fc-window"
+            style="display:none;flex-direction:column;width:350px;height:500px;
+                   background:white;border-radius:18px;
+                   box-shadow:0 10px 40px rgba(0,0,0,0.22);
+                   position:absolute;bottom:72px;right:0;overflow:hidden;">
+
+            <div style="background:linear-gradient(135deg,#0d6efd,#6610f2);color:white;
+                        padding:13px 16px;display:flex;justify-content:space-between;
+                        align-items:center;flex-shrink:0;">
+                <div>
+                    <strong style="font-size:0.95rem;">🤖 Tutor IA — Sessão Atual</strong>
+                    <div id="fc-domain-label"
+                        style="font-size:0.71rem;opacity:0.88;margin-top:2px;">
+                        Assistente de Aprendizado Adaptativo
+                    </div>
+                </div>
+                <div style="display:flex;gap:6px;">
+                    <button onclick="fcClearChat()" title="Limpar histórico desta sessão"
+                        style="background:rgba(255,255,255,0.18);border:none;color:white;
+                               border-radius:6px;padding:3px 8px;font-size:0.75rem;cursor:pointer;">🗑️</button>
+                    <button onclick="fcClose()"
+                        style="background:rgba(255,255,255,0.18);border:none;color:white;
+                               border-radius:6px;padding:3px 8px;font-size:0.75rem;cursor:pointer;">✕</button>
+                </div>
+            </div>
+
+            <div id="fc-messages"
+                style="flex:1;overflow-y:auto;padding:13px;background:#f8f9fa;
+                       display:flex;flex-direction:column;gap:9px;">
+                <div id="fc-placeholder"
+                    style="text-align:center;color:#6c757d;margin-top:30px;
+                           font-size:0.88rem;padding:0 14px;">
+                    <div style="font-size:2.4rem;margin-bottom:10px;">📖</div>
+                    <p style="margin:0;line-height:1.6;">
+                        Olá! Estou aqui para ajudar com dúvidas sobre o <strong>conteúdo desta sessão</strong>.
+                    </p>
+                    <p style="margin-top:10px;font-size:0.76rem;color:#adb5bd;">
+                        ⏰ A cada 10 minutos envio uma dica personalizada sobre o tema!
+                    </p>
+                </div>
+            </div>
+
+            <div style="padding:10px 13px;background:white;border-top:1px solid #e9ecef;flex-shrink:0;">
+                <div style="display:flex;gap:8px;align-items:center;">
+                    <input type="text" id="fc-input"
+                        placeholder="Tire uma dúvida sobre o conteúdo..."
+                        style="flex:1;border:1px solid #dee2e6;border-radius:22px;
+                               padding:7px 15px;font-size:0.87rem;outline:none;
+                               transition:border-color 0.15s;"
+                        onfocus="this.style.borderColor='#0d6efd'"
+                        onblur="this.style.borderColor='#dee2e6'"
+                        onkeypress="if(event.key==='Enter')fcSend()">
+                    <button id="fc-send-btn" onclick="fcSend()"
+                        style="background:linear-gradient(135deg,#0d6efd,#6610f2);
+                               color:white;border:none;border-radius:50%;
+                               width:38px;height:38px;cursor:pointer;font-size:1rem;
+                               display:flex;align-items:center;justify-content:center;
+                               flex-shrink:0;transition:opacity 0.15s;">➤</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+    (function () {
+        'use strict';
+        const COOLDOWN_MS = 30000;
+        const PROACTIVE_MS = 10 * 60 * 1000;
+        let isOpen = false, sending = false, lastSent = 0;
+
+        // session_id e my_id já estão disponíveis como window.session_id e window.my_id
+        const SID = window.session_id;
+
+        window.fcToggle = function () {
+            isOpen = !isOpen;
+            document.getElementById('fc-window').style.display = isOpen ? 'flex' : 'none';
+            if (isOpen) {
+                document.getElementById('fc-badge').style.display = 'none';
+                document.getElementById('fc-input').focus();
+                document.getElementById('fc-messages').scrollTop = 999999;
+            }
+        };
+
+        window.fcClose = function () {
+            isOpen = false;
+            document.getElementById('fc-window').style.display = 'none';
+        };
+
+        window.fcClearChat = function () {
+            if (!confirm('Apagar o histórico do chat desta sessão?')) return;
+            fetch(`/orchestrator/student/chat_history?session_id=${SID}`, { method: 'DELETE' })
+                .then(r => {
+                    if (r.ok) {
+                        document.getElementById('fc-messages').innerHTML = '';
+                        document.getElementById('fc-placeholder').style.display = 'block';
+                    }
+                });
+        };
+
+        function addMsg(sender, text) {
+            const ph = document.getElementById('fc-placeholder');
+            if (ph) ph.style.display = 'none';
+            const box = document.getElementById('fc-messages');
+
+            const row = document.createElement('div');
+            row.style.display = 'flex';
+            row.style.justifyContent = sender === 'user' ? 'flex-end'
+                : sender === 'system' ? 'center' : 'flex-start';
+
+            const bub = document.createElement('div');
+            bub.style.maxWidth = '85%';
+            bub.style.padding = '8px 13px';
+            bub.style.fontSize = '0.86rem';
+            bub.style.lineHeight = '1.55';
+            bub.style.whiteSpace = 'pre-wrap';
+            bub.style.wordBreak = 'break-word';
+
+            const safe = text.replace(/</g, '&lt;').replace(/>/g, '&gt;');
+            const rich = safe
+                .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
+                .replace(/\n/g, '<br>');
+
+            if (sender === 'user') {
+                bub.style.background = '#0d6efd';
+                bub.style.color = 'white';
+                bub.style.borderRadius = '16px 16px 4px 16px';
+                bub.innerText = text;
+            } else if (sender === 'proactive') {
+                bub.style.background = 'linear-gradient(135deg,#e8f4fd,#f0e6ff)';
+                bub.style.border = '1px solid #c5d9f8';
+                bub.style.borderRadius = '16px 16px 16px 4px';
+                bub.innerHTML =
+                    '<strong style="color:#0d6efd;font-size:0.76rem;display:block;margin-bottom:5px;">' +
+                    '📚 DICA PERSONALIZADA</strong>' + rich;
+            } else if (sender === 'agent') {
+                bub.style.background = 'white';
+                bub.style.border = '1px solid #e9ecef';
+                bub.style.boxShadow = '0 1px 5px rgba(0,0,0,0.07)';
+                bub.style.borderRadius = '16px 16px 16px 4px';
+                bub.innerHTML =
+                    '<strong style="color:#6610f2;font-size:0.76rem;display:block;margin-bottom:5px;">' +
+                    '🤖 TUTOR IA</strong>' + rich;
+            } else {
+                bub.style.color = '#adb5bd';
+                bub.style.fontSize = '0.78rem';
+                bub.style.fontStyle = 'italic';
+                bub.innerText = text;
+            }
+
+            const id = 'fc-' + Date.now() + Math.random().toString(36).slice(2, 7);
+            row.id = id;
+            row.appendChild(bub);
+            box.appendChild(row);
+            box.scrollTop = box.scrollHeight;
+            return id;
+        }
+
+        function removeMsg(id) { const e = document.getElementById(id); if (e) e.remove(); }
+
+        window.fcSend = async function () {
+            if (sending) return;
+            const now = Date.now();
+            if (now - lastSent < COOLDOWN_MS) {
+                const s = Math.ceil((COOLDOWN_MS - (now - lastSent)) / 1000);
+                addMsg('system', `Aguarde ${s}s antes de enviar outra mensagem.`);
+                return;
+            }
+            const inp = document.getElementById('fc-input');
+            const text = inp.value.trim();
+            if (!text) return;
+
+            addMsg('user', text);
+            inp.value = '';
+            sending = true;
+            lastSent = now;
+            document.getElementById('fc-send-btn').style.opacity = '0.45';
+
+            const lid = addMsg('system', '⏳ Processando...');
+            try {
+                const r = await fetch('/orchestrator/student/floating_chat', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ question: text, session_id: SID })
+                });
+                removeMsg(lid);
+                const d = await r.json();
+                addMsg(r.ok ? 'agent' : 'system',
+                    r.ok ? (d.answer || 'Sem resposta.') : 'Erro: ' + (d.error || 'Falha.'));
+            } catch {
+                removeMsg(lid);
+                addMsg('system', 'Erro de conexão. Verifique os serviços.');
+            } finally {
+                sending = false;
+                document.getElementById('fc-send-btn').style.opacity = '1';
+            }
+        };
+
+        async function proactive() {
+            try {
+                const r = await fetch(`/orchestrator/student/proactive?session_id=${SID}`);
+                if (!r.ok) return;
+                const d = await r.json();
+                if (!d.recommendation) return;
+                addMsg('proactive', d.recommendation);
+                if (!isOpen) document.getElementById('fc-badge').style.display = 'block';
+            } catch { }
+        }
+
+        async function loadHistory() {
+            try {
+                const r = await fetch(`/orchestrator/student/chat_history?session_id=${SID}`);
+                if (!r.ok) return;
+                const h = await r.json();
+                if (Array.isArray(h) && h.length > 0) {
+                    h.forEach(m => addMsg(m.sender, m.message));
+                }
+            } catch { }
+        }
+
+        document.addEventListener('DOMContentLoaded', function () {
+            if (!SID) return;
+            loadHistory();
+            // Primeira dica após 10 minutos, depois repete a cada 10 minutos
+            setTimeout(function () {
+                proactive();
+                setInterval(proactive, PROACTIVE_MS);
+            }, PROACTIVE_MS);
+        });
+    })();
+    </script>
+    {% endif %}
+
+
+{% if current_user and current_user['type'] == 'teacher' %}
+<!-- Botão de alertas fixo no canto superior direito -->
+<div style="position:relative;display:inline-block;">
+    <button id="teacher-alerts-btn" onclick="toggleAlerts()" title="Alertas de aprendizagem">
+        <i class="bi bi-bell-fill"></i>
+    </button>
+    <span id="alerts-badge"></span>
+</div>
+
+<!-- Painel de alertas -->
+<div id="teacher-alerts-panel" class="card border-0">
+    <div class="card-header d-flex justify-content-between align-items-center"
+         style="background:linear-gradient(135deg,#f59e0b,#d97706);color:white;border-radius:12px 12px 0 0;padding:12px 16px;">
+        <span style="font-weight:600;"><i class="bi bi-bell-fill me-2"></i>Alertas de Aprendizagem</span>
+        <button class="btn btn-sm btn-light py-0 px-2" onclick="toggleAlerts()">✕</button>
+    </div>
+    <div id="alerts-list" style="background:#fffbeb;padding:12px;border-radius:0 0 12px 12px;">
+        <p class="text-muted text-center small mt-1 mb-1" id="alerts-empty">Nenhum alerta ainda.</p>
+    </div>
+</div>
+
+<script>
+(function () {
+    const SID = window.session_id;
+    const TOKEN = window.token;
+    let knownAlertIds = new Set();
+    let panelOpen = false;
+    let newCount = 0;
+
+    function toggleAlerts() {
+        panelOpen = !panelOpen;
+        document.getElementById('teacher-alerts-panel').style.display = panelOpen ? 'block' : 'none';
+        if (panelOpen) {
+            newCount = 0;
+            const badge = document.getElementById('alerts-badge');
+            badge.style.display = 'none';
+            badge.textContent = '';
+        }
+    }
+    window.toggleAlerts = toggleAlerts;
+
+    function formatDate(iso) {
+        if (!iso) return '';
+        const d = new Date(iso);
+        return d.toLocaleString('pt-BR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
+    }
+
+    async function fetchAlerts() {
+        if (!SID) return;
+        try {
+            const r = await fetch(`/sessions/${SID}/teacher_alerts`, {
+                headers: { 'Authorization': `Bearer ${TOKEN}` }
+            });
+            if (!r.ok) return;
+            const alerts = await r.json();
+            if (!Array.isArray(alerts)) return;
+
+            const newAlerts = alerts.filter(a => !knownAlertIds.has(a.id));
+            if (!newAlerts.length) return;
+
+            const list = document.getElementById('alerts-list');
+            const empty = document.getElementById('alerts-empty');
+            if (empty) empty.remove();
+
+            newAlerts.forEach(a => {
+                knownAlertIds.add(a.id);
+                const card = document.createElement('div');
+                card.className = 'alert-card';
+
+                const isMastery = a.alert_type === 'mastery';
+                const tagHtml = isMastery
+                    ? `<span class="badge bg-secondary me-1">${a.concept || ''}</span><small class="text-danger fw-bold">${(a.mastery_pct || 0).toFixed(0)}% de domínio</small>`
+                    : `<span class="badge bg-danger me-1">Nota baixa</span><small class="text-danger fw-bold">${a.score ?? '?'}% na atividade</small>`;
+
+                const emailHtml = a.student_email
+                    ? `<a href="mailto:${a.student_email}" class="ms-1" style="font-size:0.8rem;">${a.student_email}</a>`
+                    : '';
+
+                card.innerHTML = `
+                    <div class="d-flex justify-content-between align-items-center mb-1">
+                        <strong><i class="bi bi-exclamation-triangle-fill text-warning me-1"></i>${a.student_name || 'Aluno ID ' + a.student_id}${emailHtml}</strong>
+                        <small class="text-muted">${formatDate(a.created_at)}</small>
+                    </div>
+                    <div class="mb-1">${tagHtml}</div>
+                    <div style="color:#374151;">${a.message}</div>
+                `;
+                list.prepend(card);
+            });
+
+            if (!panelOpen) {
+                newCount += newAlerts.length;
+                const badge = document.getElementById('alerts-badge');
+                badge.style.display = 'flex';
+                badge.textContent = newCount > 9 ? '9+' : String(newCount);
+            }
+        } catch (e) { }
+    }
+
+    document.addEventListener('DOMContentLoaded', function () {
+        if (!SID) return;
+        fetchAlerts();
+        setInterval(fetchAlerts, 30000);
+    });
+})();
+</script>
+{% endif %}
 
 </body>
 

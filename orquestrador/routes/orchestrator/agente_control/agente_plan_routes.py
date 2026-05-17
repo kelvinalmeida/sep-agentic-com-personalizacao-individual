@@ -119,7 +119,7 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "get_student_profile",
-            "description": "Busca o perfil individual do aluno: nome, curso, idade, tipo de conteúdo preferido, forma de comunicação preferida e se aceita e-mail.",
+            "description": "Busca o perfil individual do aluno: curso, idade, tipo de conteúdo preferido, forma de comunicação preferida e se aceita e-mail.",
             "parameters": {"type": "object", "properties": {}, "required": []}
         }
     },
@@ -259,7 +259,6 @@ INSTRUÇÕES:
             if r.status_code == 200:
                 d = r.json()
                 return {
-                    "name": d.get('name') or 'N/A',
                     "course": d.get('course') or 'N/A',
                     "age": d.get('age') or 'N/A',
                     "pref_content_type": d.get('pref_content_type') or 'N/A',
@@ -278,7 +277,8 @@ INSTRUÇÕES:
                 timeout=10
             )
             if r.status_code == 200:
-                return r.json().get('students', [])
+                students = r.json().get('students', [])
+                return [{k: v for k, v in s.items() if k != 'name'} for s in students]
         except Exception as e:
             logging.warning("Erro get_class_profile: %s", e)
         return []

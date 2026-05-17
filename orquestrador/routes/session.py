@@ -710,3 +710,13 @@ def get_session_rating(session_id, current_user=None):
             return (response.text, response.status_code, response.headers.items())
     except RequestException as e:
         return jsonify({"error": "Service unavailable", "details": str(e)}), 503
+
+
+@session_bp.route('/sessions/<int:session_id>/teacher_alerts', methods=['GET'])
+@token_required
+def get_teacher_alerts(session_id, current_user=None):
+    try:
+        response = requests.get(f"{STRATEGIES_URL}/sessions/{session_id}/alerts", timeout=10)
+        return jsonify(response.json()), response.status_code
+    except RequestException as e:
+        return jsonify({"error": "Strategies service unavailable", "details": str(e)}), 503

@@ -548,7 +548,7 @@ def get_student_chat_history(username):
                         "private": []
                     }
                 
-                formatted_msg = f"(Para {target}): {content}"
+                formatted_msg = f"(Mensagem privada): {content}"
                 history_map[tid]["private"].append(formatted_msg)
 
         # 3. LLM Analysis

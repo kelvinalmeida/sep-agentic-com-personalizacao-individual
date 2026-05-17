@@ -8,14 +8,139 @@
     <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.10.0/font/bootstrap-icons.css" rel="stylesheet">
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.5/dist/css/bootstrap.min.css" rel="stylesheet"
         integrity="sha384-SgOJa3DmI69IUzQ2PVdRZhwQ+dy64/BUtbMJw1MZ8t5HZApcHrRKUc4W0kG879m7" crossorigin="anonymous">
+    <style>
+        .tcle-scroll {
+            max-height: 320px;
+            overflow-y: auto;
+            border: 1px solid #dee2e6;
+            border-radius: 6px;
+            padding: 18px 22px;
+            background: #fafbfc;
+            font-size: 13.5px;
+            line-height: 1.6;
+        }
+        .tcle-scroll h6 {
+            color: #1e40af;
+            font-weight: 700;
+            margin-top: 14px;
+            margin-bottom: 4px;
+            font-size: 13px;
+            text-transform: uppercase;
+            letter-spacing: 0.4px;
+        }
+        .tcle-scroll h6:first-child { margin-top: 0; }
+        .tcle-scroll p, .tcle-scroll ul { margin-bottom: 8px; }
+        .tcle-scroll::-webkit-scrollbar { width: 6px; }
+        .tcle-scroll::-webkit-scrollbar-thumb { background: #adb5bd; border-radius: 3px; }
+    </style>
 </head>
 
 <body>
     <div class="container">
         <div class="row justify-content-center">
-            <div class="col-md-8 mt-5"> <h1 class="mb-4 text-center">Insira as Informações do novo Aluno</h1>
-                
-                <form method="POST">
+            <div class="col-md-8 mt-5">
+                <h1 class="mb-4 text-center">Insira as Informações do novo Aluno</h1>
+
+                <form method="POST" id="registerForm">
+
+                    <!-- TCLE -->
+                    <div class="card mb-4 shadow-sm" style="border: 2px solid #f59e0b;">
+                        <div class="card-header text-white" style="background: linear-gradient(135deg, #1e40af 0%, #3b82f6 100%);">
+                            <h5 class="mb-0"><i class="bi bi-file-earmark-text-fill me-2"></i>Termo de Consentimento Livre e Esclarecido (TCLE)</h5>
+                            <small class="opacity-75">Pesquisa: Sistema Educacional Personalizado baseado em Agentes de IA (SEP-Agentic)</small>
+                        </div>
+                        <div class="card-body">
+                            <div class="alert alert-info py-2 mb-3" style="font-size:13.5px;">
+                                <strong>Antes de se cadastrar</strong>, leia atentamente o termo abaixo. Sua participação é
+                                voluntária e os dados coletados serão usados em pesquisa de Trabalho de Conclusão de Curso da UFAL.
+                            </div>
+
+                            <a href="/tcle/pdf" target="_blank" class="btn btn-outline-primary btn-sm mb-3">
+                                <i class="bi bi-download me-1"></i> Baixar TCLE completo em PDF
+                            </a>
+
+                            <div class="tcle-scroll mb-3">
+                                <h6>1. Objetivos da pesquisa</h6>
+                                <p>Esta pesquisa tem como objetivo avaliar o uso de um sistema educacional personalizado baseado em
+                                agentes de inteligência artificial (SEP-Agentic) por estudantes de graduação, verificando seu
+                                impacto sobre a experiência de aprendizagem e a percepção de personalização do ensino.</p>
+
+                                <h6>2. Procedimentos</h6>
+                                <p>Caso aceite participar, você irá:</p>
+                                <ul>
+                                    <li>Responder a um questionário inicial (5 a 10 minutos);</li>
+                                    <li>Cadastrar-se no sistema e utilizá-lo em sessões de estudo;</li>
+                                    <li>Responder a um questionário final sobre sua experiência (5 a 10 minutos).</li>
+                                </ul>
+                                <p>A participação total leva cerca de 60 a 90 minutos e pode ser feita remotamente.</p>
+
+                                <h6>3. Sobre o sistema e o uso de IA</h6>
+                                <p>O SEP-Agentic utiliza agentes de inteligência artificial para personalizar o ensino. Para gerar
+                                respostas, feedbacks e materiais, o sistema integra-se com a API da empresa <strong>Groq Inc.</strong>
+                                (norte-americana), utilizando o modelo Llama 3.3.</p>
+                                <p><strong>Transferência internacional:</strong> parte das informações geradas durante o uso do
+                                sistema (suas respostas a exercícios, dúvidas e contextos pedagógicos) é enviada aos servidores da
+                                Groq Inc., localizados fora do Brasil.</p>
+                                <p><strong>Proteção:</strong> antes de qualquer envio à API externa, dados pessoais identificadores
+                                (nome real, e-mail) são removidos ou substituídos por códigos não identificáveis. As políticas
+                                atuais da Groq estabelecem que dados enviados via API não são usados para treinamento de modelos.</p>
+
+                                <h6>4. Riscos</h6>
+                                <p>Esta pesquisa apresenta riscos mínimos: cansaço por responder questionários, possível
+                                constrangimento ao refletir sobre dificuldades pessoais, e baixo risco de quebra de sigilo no
+                                tráfego de dados (mitigado por HTTPS, criptografia de senhas e pseudonimização). Modelos de IA
+                                podem ocasionalmente gerar respostas imprecisas — você não é obrigado(a) a seguir tais orientações.</p>
+
+                                <h6>5. Benefícios</h6>
+                                <ul>
+                                    <li>Acesso a uma ferramenta educacional personalizada;</li>
+                                    <li>Recebimento de feedback automático em exercícios;</li>
+                                    <li>Recomendações de materiais adaptados ao seu perfil.</li>
+                                </ul>
+
+                                <h6>6. Confidencialidade e LGPD</h6>
+                                <p>Em conformidade com a Lei nº 13.709/2018 (LGPD) e a Resolução CNS nº 466/2012, sua identidade
+                                será mantida em sigilo absoluto. Os dados serão usados exclusivamente para esta pesquisa,
+                                apresentados de forma agregada e anônima, e mantidos por 5 anos antes do descarte seguro.</p>
+                                <p>Você tem direito de acessar, corrigir ou solicitar a exclusão de seus dados, e de revogar este
+                                consentimento a qualquer momento.</p>
+
+                                <h6>7. Participação voluntária</h6>
+                                <p>Sua participação é voluntária. Você pode se recusar a participar ou retirar seu consentimento a
+                                qualquer momento, sem penalidade ou prejuízo na sua relação com a UFAL.</p>
+
+                                <h6>8. Contatos</h6>
+                                <p><strong>Pesquisador responsável:</strong> ARTURO HERNANDEZ DOMINGUEZ — arturohd@ic.ufal.br<br>
+                                <strong>Pesquisador assistente:</strong> Kelvin Santos de Almeida Lima — (82) 99339-7611<br>
+                                <strong>CEP/UFAL:</strong> cep@ufal.br</p>
+                            </div>
+
+                            {% if error_tcle %}
+                            <div class="alert alert-danger py-2" style="font-size:13.5px;">
+                                <i class="bi bi-exclamation-triangle-fill me-1"></i> {{ error_tcle }}
+                            </div>
+                            {% endif %}
+
+                            <div class="p-3 rounded" style="background:#fef9c3; border-left: 4px solid #eab308;">
+                                <div class="form-check">
+                                    <input class="form-check-input" type="checkbox" id="tcleCheck"
+                                           name="tcle_aceito" value="sim">
+                                    <label class="form-check-label" for="tcleCheck" style="font-size:14px;">
+                                        <strong>Li, entendi e concordo</strong> em participar voluntariamente desta pesquisa
+                                        nos termos do TCLE acima. Estou ciente de que posso retirar meu consentimento a
+                                        qualquer momento e que meus dados serão tratados conforme a LGPD.
+                                    </label>
+                                </div>
+                            </div>
+
+                            <p class="text-muted mt-2 mb-0" style="font-size:11.5px; text-align:center;">
+                                Ao marcar a caixa acima, o sistema registrará a data, hora e dispositivo da aceitação,
+                                em conformidade com a Resolução CNS nº 466/2012.
+                            </p>
+                        </div>
+                    </div>
+                    <!-- /TCLE -->
+
                     <div class="mb-3">
                         <label for="name" class="form-label">Nome</label>
                         <input type="text" class="form-control" id="name" name="name"
@@ -42,20 +167,17 @@
 
                     <div class="mb-3">
                         <label for="username" class="form-label">Username</label>
-                        <input type="text" class="form-control is-invalid" id="username" name="username"
+                        <input type="text" class="form-control {% if error %}is-invalid{% endif %}" id="username" name="username"
                             value="{{ request.form.get('username', '') }}" required>
-
                         {% if error %}
-                        <div class="invalid-feedback">
-                            {{ error }}
-                        </div>
+                        <div class="invalid-feedback">{{ error }}</div>
                         {% endif %}
                     </div>
 
                     <div class="mb-3">
                         <label for="password" class="form-label">Senha</label>
                         <input type="password" class="form-control" id="password" name="password"
-                            value="{{ request.form.get('username', '') }}" placeholder="Digite a senha" required>
+                            placeholder="Digite a senha" required>
                     </div>
 
                     <div class="card border-primary mb-4 mt-4 shadow-sm" style="background-color: #f8faff;">
@@ -71,7 +193,7 @@
 
                             <div class="mb-3">
                                 <label for="pref_content_type" class="form-label fw-bold">Ao aprender um novo tópico, você prefere começar por:</label>
-                                <select class="form-select" id="pref_content_type" name="pref_content_type" aria-label="Seleção de preferência de conteúdo" required>
+                                <select class="form-select" id="pref_content_type" name="pref_content_type" required>
                                     <option selected disabled value="">Abra este menu de seleção</option>
                                     <option value="teoria">Definições Teóricas</option>
                                     <option value="exemplos">Exemplos Práticos</option>
@@ -81,7 +203,7 @@
 
                             <div class="mb-3">
                                 <label for="pref_communication" class="form-label fw-bold">Qual sua forma preferida de interação?</label>
-                                <select class="form-select" id="pref_communication" name="pref_communication" aria-label="Seleção de preferência de comunicação" required>
+                                <select class="form-select" id="pref_communication" name="pref_communication" required>
                                     <option selected disabled value="">Abra este menu de seleção</option>
                                     <option value="chat">Chat (Texto)</option>
                                     <option value="video">Videoconferência</option>
@@ -95,12 +217,15 @@
                             </div>
                         </div>
                     </div>
+
                     <div class="d-grid gap-2 mb-5">
-                        <button type="submit" class="btn btn-success btn-lg">Criar Aluno</button>
+                        <button type="submit" class="btn btn-success btn-lg" id="submitBtn" disabled>
+                            <i class="bi bi-person-check-fill me-1"></i> Criar Aluno
+                        </button>
                         <a href="/students" class="btn btn-secondary">Ver Todos os Alunos</a>
                     </div>
                 </form>
-                
+
                 <div class="col-md-12 mt-3 text-center mb-5">
                     <a href="/" class="btn btn-link">Voltar Para o Home Page</a>
                 </div>
@@ -111,6 +236,13 @@
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.5/dist/js/bootstrap.bundle.min.js"
         integrity="sha384-k6d4wzSIapyDyv1kpU366/PK5hCdSbCRGRCMv+eplOQJWyd1fbcAu9OCUj5zNLiq"
         crossorigin="anonymous"></script>
+    <script>
+        const tcleCheck = document.getElementById('tcleCheck');
+        const submitBtn = document.getElementById('submitBtn');
+        tcleCheck.addEventListener('change', function () {
+            submitBtn.disabled = !this.checked;
+        });
+    </script>
 </body>
 
 </html>
