@@ -179,6 +179,64 @@
                 font-size: 0.95rem;
             }
         }
+
+        /* === Painel de Alertas do Professor === */
+        #teacher-alerts-btn {
+            position: fixed;
+            top: 16px;
+            right: 20px;
+            z-index: 1050;
+            width: 48px;
+            height: 48px;
+            border-radius: 50%;
+            background: linear-gradient(135deg, #f59e0b, #d97706);
+            border: none;
+            color: white;
+            font-size: 1.2rem;
+            box-shadow: 0 4px 12px rgba(245,158,11,0.4);
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            transition: transform 0.2s;
+        }
+        #teacher-alerts-btn:hover { transform: scale(1.08); }
+        #alerts-badge {
+            position: absolute;
+            top: -4px;
+            right: -4px;
+            background: #dc2626;
+            color: white;
+            border-radius: 50%;
+            width: 20px;
+            height: 20px;
+            font-size: 0.65rem;
+            font-weight: bold;
+            display: none;
+            align-items: center;
+            justify-content: center;
+        }
+        #teacher-alerts-panel {
+            position: fixed;
+            top: 72px;
+            right: 20px;
+            width: 360px;
+            max-height: 480px;
+            overflow-y: auto;
+            z-index: 1049;
+            display: none;
+            box-shadow: 0 8px 24px rgba(0,0,0,0.18);
+            border-radius: 12px;
+            border: none;
+        }
+        #teacher-alerts-panel .alert-card {
+            border-left: 4px solid #f59e0b;
+            background: #fffbeb;
+            border-radius: 6px;
+            padding: 10px 12px;
+            margin-bottom: 8px;
+            font-size: 0.85rem;
+        }
     </style>
 </head>
 
@@ -938,6 +996,114 @@
     })();
     </script>
     {% endif %}
+
+
+{% if current_user and current_user['type'] == 'teacher' %}
+<!-- Botão de alertas fixo no canto superior direito -->
+<div style="position:relative;display:inline-block;">
+    <button id="teacher-alerts-btn" onclick="toggleAlerts()" title="Alertas de aprendizagem">
+        <i class="bi bi-bell-fill"></i>
+    </button>
+    <span id="alerts-badge"></span>
+</div>
+
+<!-- Painel de alertas -->
+<div id="teacher-alerts-panel" class="card border-0">
+    <div class="card-header d-flex justify-content-between align-items-center"
+         style="background:linear-gradient(135deg,#f59e0b,#d97706);color:white;border-radius:12px 12px 0 0;padding:12px 16px;">
+        <span style="font-weight:600;"><i class="bi bi-bell-fill me-2"></i>Alertas de Aprendizagem</span>
+        <button class="btn btn-sm btn-light py-0 px-2" onclick="toggleAlerts()">✕</button>
+    </div>
+    <div id="alerts-list" style="background:#fffbeb;padding:12px;border-radius:0 0 12px 12px;">
+        <p class="text-muted text-center small mt-1 mb-1" id="alerts-empty">Nenhum alerta ainda.</p>
+    </div>
+</div>
+
+<script>
+(function () {
+    const SID = window.session_id;
+    const TOKEN = window.token;
+    let knownAlertIds = new Set();
+    let panelOpen = false;
+    let newCount = 0;
+
+    function toggleAlerts() {
+        panelOpen = !panelOpen;
+        document.getElementById('teacher-alerts-panel').style.display = panelOpen ? 'block' : 'none';
+        if (panelOpen) {
+            newCount = 0;
+            const badge = document.getElementById('alerts-badge');
+            badge.style.display = 'none';
+            badge.textContent = '';
+        }
+    }
+    window.toggleAlerts = toggleAlerts;
+
+    function formatDate(iso) {
+        if (!iso) return '';
+        const d = new Date(iso);
+        return d.toLocaleString('pt-BR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
+    }
+
+    async function fetchAlerts() {
+        if (!SID) return;
+        try {
+            const r = await fetch(`/sessions/${SID}/teacher_alerts`, {
+                headers: { 'Authorization': `Bearer ${TOKEN}` }
+            });
+            if (!r.ok) return;
+            const alerts = await r.json();
+            if (!Array.isArray(alerts)) return;
+
+            const newAlerts = alerts.filter(a => !knownAlertIds.has(a.id));
+            if (!newAlerts.length) return;
+
+            const list = document.getElementById('alerts-list');
+            const empty = document.getElementById('alerts-empty');
+            if (empty) empty.remove();
+
+            newAlerts.forEach(a => {
+                knownAlertIds.add(a.id);
+                const card = document.createElement('div');
+                card.className = 'alert-card';
+
+                const isMastery = a.alert_type === 'mastery';
+                const tagHtml = isMastery
+                    ? `<span class="badge bg-secondary me-1">${a.concept || ''}</span><small class="text-danger fw-bold">${(a.mastery_pct || 0).toFixed(0)}% de domínio</small>`
+                    : `<span class="badge bg-danger me-1">Nota baixa</span><small class="text-danger fw-bold">${a.score ?? '?'}% na atividade</small>`;
+
+                const emailHtml = a.student_email
+                    ? `<a href="mailto:${a.student_email}" class="ms-1" style="font-size:0.8rem;">${a.student_email}</a>`
+                    : '';
+
+                card.innerHTML = `
+                    <div class="d-flex justify-content-between align-items-center mb-1">
+                        <strong><i class="bi bi-exclamation-triangle-fill text-warning me-1"></i>${a.student_name || 'Aluno ID ' + a.student_id}${emailHtml}</strong>
+                        <small class="text-muted">${formatDate(a.created_at)}</small>
+                    </div>
+                    <div class="mb-1">${tagHtml}</div>
+                    <div style="color:#374151;">${a.message}</div>
+                `;
+                list.prepend(card);
+            });
+
+            if (!panelOpen) {
+                newCount += newAlerts.length;
+                const badge = document.getElementById('alerts-badge');
+                badge.style.display = 'flex';
+                badge.textContent = newCount > 9 ? '9+' : String(newCount);
+            }
+        } catch (e) { }
+    }
+
+    document.addEventListener('DOMContentLoaded', function () {
+        if (!SID) return;
+        fetchAlerts();
+        setInterval(fetchAlerts, 30000);
+    });
+})();
+</script>
+{% endif %}
 
 </body>
 

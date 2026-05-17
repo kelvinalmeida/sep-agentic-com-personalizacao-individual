@@ -126,6 +126,26 @@ def get_students():
 
     # return jsonify([{"id": s.id, "name": s.name, "age": s.age, "course": s.course, "type": s.type, "username": s.username, "password": s.password_hash} for s in students])
 
+@student_bp.route("/students/<int:student_id>/contact", methods=["GET"])
+def get_student_contact(student_id):
+    """Retorna nome e email do aluno para uso interno (notificações ao professor)."""
+    conn = create_connection(current_app.config['SQLALCHEMY_DATABASE_URI'])
+    if conn is None:
+        return jsonify({"error": "Database connection failed"}), 503
+    cursor = conn.cursor()
+    try:
+        cursor.execute("SELECT name, email FROM student WHERE student_id = %s;", (student_id,))
+        row = cursor.fetchone()
+        if row:
+            return jsonify({"name": row["name"], "email": row["email"]}), 200
+        return jsonify({"error": "Aluno não encontrado"}), 404
+    except Exception as e:
+        return jsonify({"error": str(e)}), 400
+    finally:
+        cursor.close()
+        conn.close()
+
+
 @student_bp.route("/students/<int:student_id>", methods=["GET"])
 def get_student_by_id(student_id):
     conn = create_connection(current_app.config['SQLALCHEMY_DATABASE_URI'])
