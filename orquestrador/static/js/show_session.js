@@ -1459,7 +1459,28 @@ document.addEventListener("DOMContentLoaded", () => {
             }).then(response => {
                 if (response.ok) {
                     showStudentTacticArea();
-                    fetchCurrentTactic(session_id);
+                    if (adaptiveTacticEnabled && my_id) {
+                        showAdaptiveLoadingState();
+                        fetch('/orchestrator/agent/plan_session', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+                            body: JSON.stringify({ student_id: my_id, session_id: session_id })
+                        })
+                        .then(r => r.json())
+                        .then(planData => {
+                            if (planData.overall_goal) showSessionGoal(planData.overall_goal);
+                            if (planData.tactic_sequence) {
+                                localStorage.setItem(`plan_sequence_${session_id}_${my_id}`, JSON.stringify(planData.tactic_sequence));
+                            }
+                            if (planData.reasoning) {
+                                localStorage.setItem(`adaptive_reasoning_${session_id}_${my_id}`, planData.reasoning);
+                            }
+                        })
+                        .catch(() => {})
+                        .finally(() => fetchCurrentTactic(session_id));
+                    } else {
+                        fetchCurrentTactic(session_id);
+                    }
                 } else {
                     studentStartBtn.disabled = false;
                     alert("Erro ao iniciar a sessão. Tente novamente.");

@@ -17,6 +17,30 @@ TACTIC_TYPE_DESCRIPTIONS = """TIPOS DE TÁTICAS:
 - Mudança de Estratégia: Troca a estratégia didática atual.
 - Regra: Executa ações condicionalmente."""
 
+PERSONALIZATION_GUIDE = """REGRAS DE PERSONALIZAÇÃO DA SEQUÊNCIA (aplique SEMPRE que os dados do aluno indicarem):
+
+Por preferência de conteúdo (pref_content_type):
+- 'video' → coloque táticas Reuso antes das táticas síncronas ou de envio.
+- 'pdf' ou 'leitura' → coloque táticas Reuso com materiais escritos antes das síncronas.
+- 'exercicio' ou 'prática' → coloque táticas Reuso com exercícios mais cedo na sequência.
+
+Por preferência de comunicação (pref_communication):
+- 'sincrona' ou 'chat' → coloque Debate Síncrono antes de Reuso.
+- 'assincrona' ou 'email' → coloque Envio de Informação antes do Debate Síncrono.
+
+Por pref_receive_email:
+- true → coloque Envio de Informação antes das atividades práticas.
+- false → mova Envio de Informação para o final ou evite colocá-lo em primeiro lugar.
+
+Por maestria:
+- maestria < 60% em algum conceito → Reuso deve aparecer cedo para reforçar antes de avançar.
+- maestria > 80% em todos os conceitos → o aluno pode ir direto para atividades desafiadoras.
+- SEM dados de maestria (primeiro acesso ou sessão nova) → use pref_content_type e pref_communication como critério PRINCIPAL de ordenação.
+
+IMPORTANTE: A ordem das táticas DEVE refletir o perfil individual do aluno.
+Dois alunos com preferências diferentes devem ter sequências diferentes.
+Reproduzir a ordem padrão só é aceitável se os dados do aluno explicitamente não indicarem outra coisa."""
+
 # ---------------------------------------------------------------------------
 # GUARDRAILS — regras pedagógicas obrigatórias
 # Cada regra tem: id, descrição legível, e função fix(sequence, tactics, ctx)
@@ -230,10 +254,12 @@ def _run_planner_agent(student_id, session_id, session_data, available_tactics, 
         if is_replan else ""
     )
 
-    system_prompt = f"""Você é um agente pedagógico especializado em aprendizagem adaptativa.
-Sua tarefa é criar um plano personalizado de sessão para um aluno específico.
+    system_prompt = f"""Você é um especialista em aprendizagem adaptativa.
+Sua tarefa é criar uma sequência personalizada de táticas para um aluno específico.
 {replan_note}
 {TACTIC_TYPE_DESCRIPTIONS}
+
+{PERSONALIZATION_GUIDE}
 
 {GUARDRAIL_DESCRIPTIONS}
 
@@ -241,12 +267,13 @@ TÁTICAS DISPONÍVEIS (todos os índices {valid_indices} devem aparecer no plano
 {tactics_text}
 
 INSTRUÇÕES:
-1. OBRIGATÓRIO: chame ao menos get_student_profile e get_student_mastery antes de criar o plano.
-2. Use as demais ferramentas (histórico, notas, chat) conforme julgar relevante.
-3. Respeite obrigatoriamente as RESTRIÇÕES PEDAGÓGICAS acima ao ordenar as táticas.
+1. OBRIGATÓRIO: chame get_student_profile e get_student_mastery antes de criar o plano.
+2. Use as demais ferramentas conforme relevante (histórico enriquece o contexto).
+3. Respeite obrigatoriamente as RESTRIÇÕES PEDAGÓGICAS ao ordenar as táticas.
 4. Somente após coletar dados do aluno, chame create_session_plan com o plano final.
 5. O plano deve conter EXATAMENTE os índices {valid_indices}, cada um UMA única vez.
-6. Priorize conceitos com menor maestria (menor % = maior necessidade de reforço)."""
+6. A ORDEM deve ser personalizada: use pref_content_type e pref_communication como critério principal quando não há dados de maestria; use maestria como critério principal quando disponível.
+7. Em tactic_reasons, explique para cada tática POR QUE ela está naquela posição com base nos dados do aluno."""
 
     # Captura mastery durante execução para uso nos guardrails
     mastery_captured = []
@@ -338,9 +365,14 @@ INSTRUÇÕES:
         # Captura para guardrail G3: usa maestria atual ou histórica
         mastery_captured = current_mastery if current_mastery else historical
 
+        no_data = not current_mastery and not historical
         return {
-            "current_session": current_mastery,
-            "historical_average": historical,
+            "current_session": current_mastery if current_mastery else "Nenhum exercício respondido ainda nesta sessão.",
+            "historical_average": historical if historical else "Nenhum histórico de sessões anteriores.",
+            "personalization_note": (
+                "Sem dados de maestria disponíveis. Use pref_content_type e pref_communication "
+                "do perfil do aluno como critério PRINCIPAL para ordenar as táticas."
+            ) if no_data else None,
         }
 
     def _exec_get_student_history():
