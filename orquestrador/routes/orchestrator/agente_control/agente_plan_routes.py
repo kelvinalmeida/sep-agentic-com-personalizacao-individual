@@ -25,7 +25,7 @@ Por preferência de conteúdo (pref_content_type):
 - 'exercicio' ou 'prática' → coloque táticas Reuso com exercícios mais cedo na sequência.
 
 Por preferência de comunicação (pref_communication):
-- 'sincrona' ou 'chat' → coloque Debate Síncrono antes de Reuso.
+- 'sincrona' ou 'chat' → coloque Debate Síncrono e Apresentação Síncrona antes de Envio de Informação.
 - 'assincrona' ou 'email' → coloque Envio de Informação antes do Debate Síncrono.
 
 Por pref_receive_email:
