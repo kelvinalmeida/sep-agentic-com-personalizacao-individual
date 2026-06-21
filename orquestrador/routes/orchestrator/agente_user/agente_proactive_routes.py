@@ -12,20 +12,9 @@ logging.basicConfig(level=logging.INFO)
 def _get_session_context(session_id, student_id):
     """
     Agrega contexto anonimizado da sessão para o LLM.
-    Retorna: mastery_data, session_domain, session_exercises, pref_content_type.
+    Retorna: session_domain, session_exercises, pref_content_type.
     Nenhum dado pessoal é incluído no retorno.
     """
-    def fetch_mastery():
-        try:
-            r = requests.get(
-                f"{USER_URL}/students/{student_id}/mastery",
-                params={"session_id": session_id},
-                timeout=6
-            )
-            return r.json().get('mastery', []) if r.ok else []
-        except Exception:
-            return []
-
     def fetch_domain_context():
         try:
             # Busca dados da sessão para obter domain IDs
@@ -75,18 +64,15 @@ def _get_session_context(session_id, student_id):
         except Exception:
             return ''
 
-    with ThreadPoolExecutor(max_workers=3) as executor:
-        f_m = executor.submit(fetch_mastery)
+    with ThreadPoolExecutor(max_workers=2) as executor:
         f_d = executor.submit(fetch_domain_context)
         f_p = executor.submit(fetch_pref)
-        mastery = f_m.result()
         domain_result = f_d.result()
         pref = f_p.result()
 
     domain_info, questions = domain_result
 
     return {
-        "mastery_data": mastery,
         "session_domain": domain_info,
         "session_exercises": questions,
         "pref_content_type": pref
@@ -181,7 +167,6 @@ def floating_chat(current_user):
     # Chama o serviço user com dados anonimizados
     payload = {
         "question": question,
-        "mastery_data": ctx["mastery_data"],
         "session_domain": ctx["session_domain"],
         "session_exercises": ctx["session_exercises"],
         "pref_content_type": ctx["pref_content_type"]

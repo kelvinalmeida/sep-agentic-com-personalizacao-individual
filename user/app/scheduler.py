@@ -28,18 +28,6 @@ def _ensure_tables(conn):
             ALTER TABLE tutor_chat_history
             ADD COLUMN IF NOT EXISTS session_id INTEGER
         """)
-        cur.execute("""
-            CREATE TABLE IF NOT EXISTS student_mastery (
-                id SERIAL PRIMARY KEY,
-                student_id INTEGER NOT NULL,
-                session_id INTEGER NOT NULL DEFAULT 0,
-                concept TEXT NOT NULL,
-                mastery_pct FLOAT DEFAULT 0,
-                total_attempts INTEGER DEFAULT 0,
-                last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                UNIQUE (student_id, session_id, concept)
-            )
-        """)
     conn.commit()
 
 
@@ -69,30 +57,20 @@ def _get_domain_info(domain_ids):
     return '', ''
 
 
-def _generate_tip(client, mastery_data, domain_name, domain_desc, pref_content_type):
+def _generate_tip(client, domain_name, domain_desc, pref_content_type):
     """Generates a short pedagogical tip (≤ 100 words) via LLM."""
     topic = domain_name or 'conteúdo da sessão'
-
-    mastery_section = ''
-    if mastery_data:
-        sorted_mastery = sorted(mastery_data, key=lambda x: x.get('mastery_pct', 100))
-        lines = [
-            f"  - '{m['concept']}': {m['mastery_pct']:.0f}%"
-            for m in sorted_mastery[:5]
-        ]
-        mastery_section = "\nMAESTRIA DO ESTUDANTE NESTA SESSÃO:\n" + "\n".join(lines)
 
     pref_line = f"\nPreferência de conteúdo: {pref_content_type}." if pref_content_type else ''
 
     prompt = f"""Você é um tutor educacional proativo acompanhando ESTUDANTE em uma sessão sobre "{topic}".
-{('Descrição: ' + domain_desc[:200]) if domain_desc else ''}{mastery_section}{pref_line}
+{('Descrição: ' + domain_desc[:200]) if domain_desc else ''}{pref_line}
 
 Gere UMA dica pedagógica curta (máximo 100 palavras) e motivadora para ajudar o estudante com o conteúdo da sessão.
 Regras:
 - NUNCA revele respostas de exercícios ou gabaritos
 - Use sempre "você" (nunca o nome do aluno)
-- Se houver maestria baixa em algum conceito, direcione a dica para aquele conceito
-- Se não houver dados de maestria, dê uma dica geral e encorajadora sobre o tema
+- Dê uma dica geral e encorajadora sobre o tema
 - Sem markdown, sem JSON, apenas texto corrido"""
 
     try:
@@ -187,26 +165,7 @@ def send_proactive_tips(app):
                             if datetime.utcnow() - last_time < timedelta(minutes=PROACTIVE_COOLDOWN_MINUTES):
                                 continue
 
-                        # Buscar maestria do aluno nesta sessão
-                        with conn.cursor() as cur:
-                            cur.execute("""
-                                SELECT concept, mastery_pct, total_attempts
-                                FROM student_mastery
-                                WHERE student_id = %s AND session_id = %s
-                                ORDER BY mastery_pct ASC
-                            """, (int(student_id), session_id))
-                            mastery_rows = cur.fetchall()
-
-                        mastery_data = [
-                            {
-                                'concept': r['concept'],
-                                'mastery_pct': r['mastery_pct'],
-                                'total_attempts': r['total_attempts']
-                            }
-                            for r in mastery_rows
-                        ]
-
-                        tip = _generate_tip(client, mastery_data, domain_name, domain_desc, pref)
+                        tip = _generate_tip(client, domain_name, domain_desc, pref)
 
                         with conn.cursor() as cur:
                             cur.execute("""

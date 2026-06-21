@@ -16,7 +16,6 @@ def proactive_recommendation():
     Nenhum dado pessoal (nome, username, email) é enviado ao LLM.
     """
     data = request.get_json() or {}
-    mastery_data = data.get('mastery_data', [])
     session_domain = data.get('session_domain', {})
     session_exercises = data.get('session_exercises', [])
     pref_content_type = data.get('pref_content_type', '')
@@ -44,16 +43,6 @@ def proactive_recommendation():
     else:
         exercises_section = ""
 
-    if mastery_data:
-        mastery_sorted = sorted(mastery_data, key=lambda x: x.get('mastery_pct', 100))
-        mastery_lines = "\n".join(
-            f"  - '{m['concept']}': {m['mastery_pct']:.1f}% ({m.get('total_attempts', 0)} tentativa(s))"
-            for m in mastery_sorted[:8]
-        )
-        mastery_section = f"\nMAESTRIA DO ESTUDANTE NESTA SESSÃO:\n{mastery_lines}"
-    else:
-        mastery_section = "\nMAESTRIA: Ainda sem dados nesta sessão."
-
     pref_section = f"\nPREFERÊNCIA DE CONTEÚDO: {pref_content_type}" if pref_content_type else ""
 
     system_prompt = f"""Você é um tutor educacional proativo acompanhando ESTUDANTE durante uma sessão de aprendizagem.
@@ -67,12 +56,10 @@ REGRAS ABSOLUTAS:
 6. Seja motivador, específico e pedagogicamente responsável
 7. Máximo 150 palavras"""
 
-    user_prompt = f"""{topic_section}{exercises_section}{mastery_section}{pref_section}
+    user_prompt = f"""{topic_section}{exercises_section}{pref_section}
 
 Com base nesses dados anonimizados da sessão atual, gere UMA mensagem proativa motivadora:
-- Maestria < 50% em algum conceito → sugira revisar especificamente aquele conceito no contexto do domínio
-- Maestria entre 50-70% → incentive praticar mais dentro do tópico da sessão atual
-- Maestria > 70% em tudo ou sem dados → sugira aprofundamento no tópico "{domain_name or 'da sessão'}"
+- Sugira aprofundamento no tópico "{domain_name or 'da sessão'}"
 - Conecte a recomendação com os exercícios ou o domínio da sessão
 - Dê uma dica prática e específica ao tema atual"""
 
@@ -103,7 +90,6 @@ def chat_answer():
     """
     data = request.get_json() or {}
     question = data.get('question', '').strip()
-    mastery_data = data.get('mastery_data', [])
     session_domain = data.get('session_domain', {})
     session_exercises = data.get('session_exercises', [])
     pref_content_type = data.get('pref_content_type', '')
@@ -128,15 +114,6 @@ def chat_answer():
     if session_exercises:
         ex_sample = "; ".join(session_exercises[:4])
         context_parts.append(f"Exercícios da sessão (enunciados apenas): {ex_sample}")
-
-    if mastery_data:
-        weak = [m for m in mastery_data if m.get('mastery_pct', 100) < 70]
-        if weak:
-            weak_sorted = sorted(weak, key=lambda x: x.get('mastery_pct', 100))[:4]
-            context_parts.append(
-                "Conceitos com menor maestria nesta sessão: " +
-                ", ".join(f"{m['concept']} ({m['mastery_pct']:.0f}%)" for m in weak_sorted)
-            )
 
     if pref_content_type:
         context_parts.append(f"Preferência de conteúdo: {pref_content_type}")
