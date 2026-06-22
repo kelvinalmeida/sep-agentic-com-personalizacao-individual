@@ -157,56 +157,6 @@ document.addEventListener("DOMContentLoaded", () => {
         return new Promise(resolve => setTimeout(resolve, Math.random() * maxMs));
     }
 
-    function renderMasteryCard(mastery) {
-        const panel = document.getElementById('mastery-panel');
-        if (!panel) return;
-
-        if (!mastery || mastery.length === 0) {
-            panel.style.display = 'none';
-            panel.innerHTML = '';
-            return;
-        }
-
-        const rows = mastery.map(m => {
-            const pct = Math.round(m.mastery_pct);
-            const barClass = pct >= 70 ? 'bg-success' : pct >= 40 ? 'bg-warning' : 'bg-danger';
-            return `
-                <div class="mb-2">
-                    <div class="d-flex justify-content-between small fw-semibold">
-                        <span>${m.concept}</span><span>${pct}%</span>
-                    </div>
-                    <div class="progress" style="height:6px">
-                        <div class="progress-bar ${barClass}" role="progressbar" style="width:${pct}%"></div>
-                    </div>
-                </div>`;
-        }).join('');
-
-        panel.style.display = '';
-        panel.innerHTML = `
-            <div class="card border-info">
-                <div class="card-header bg-info text-white fw-bold small py-1">
-                    📊 Sua maestria — atualizada agora
-                </div>
-                <div class="card-body py-2 px-3">${rows}</div>
-            </div>`;
-    }
-
-    function showMasteryLoading() {
-        const panel = document.getElementById('mastery-panel');
-        if (!panel) return;
-        panel.style.display = '';
-        panel.innerHTML = `
-            <div class="card border-info">
-                <div class="card-header bg-info text-white fw-bold small py-1">
-                    📊 Sua maestria
-                </div>
-                <div class="card-body py-2 px-3 text-muted small">
-                    <span class="spinner-border spinner-border-sm me-2" role="status"></span>
-                    Calculando maestria…
-                </div>
-            </div>`;
-    }
-
     function _clearProactiveTimer() {
         if (_proactiveTimer) { clearTimeout(_proactiveTimer); _proactiveTimer = null; }
         _proactiveShown = false;
@@ -735,17 +685,6 @@ document.addEventListener("DOMContentLoaded", () => {
                                             feedbackEl.textContent = respData.resp;
                                             console.log("Respostas enviadas:", respData);
                                             _clearProactiveTimer();
-
-                                            // Atualiza maestria em tempo real (paralelo, fire-and-render)
-                                            showMasteryLoading();
-                                            fetch('/orchestrator/agent/update_and_get_mastery', {
-                                                method: 'POST',
-                                                headers: { 'Content-Type': 'application/json' },
-                                                body: JSON.stringify({ student_id: studentId, session_id: session_id })
-                                            })
-                                            .then(r => r.json())
-                                            .then(masteryData => renderMasteryCard(masteryData.mastery || []))
-                                            .catch(err => console.error('Mastery error:', err));
 
                                             if (respData.passed) {
                                                 feedbackEl.className = "mt-2 text-success fw-bold";
@@ -1296,14 +1235,6 @@ document.addEventListener("DOMContentLoaded", () => {
                         if (_storedSeq) {
                             try { renderPlanPanel(JSON.parse(_storedSeq), data.strategy_tactics, data.current_tactic_index); } catch(e) {}
                         }
-                    }
-
-                    // Restaura maestria ao recarregar a página (leitura simples, sem LLM)
-                    if (my_id) {
-                        fetch(`/orchestrator/student/mastery?student_id=${my_id}&session_id=${session_id}`)
-                        .then(r => r.json())
-                        .then(masteryData => renderMasteryCard(masteryData.mastery || []))
-                        .catch(err => console.error('Mastery restore error:', err));
                     }
 
                     const nameEl = document.getElementById("tacticName");

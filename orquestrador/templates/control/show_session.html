@@ -407,7 +407,6 @@
                     </div>
                     <div id="current_tatic_description" class="alert alert-light border shadow-sm text-muted fst-italic mt-3" role="alert"></div>
                     <div id="tatic_here" class="mt-4"></div>
-                    <div id="mastery-panel" class="mt-4" style="display:none;"></div>
                     {% if session.domains %}
                     <div id="pdf_data" data-pdfs='{{ session.domains[0].pdfs | tojson | safe }}'></div>
                     {% else %}
@@ -1138,10 +1137,7 @@
                 const card = document.createElement('div');
                 card.className = 'alert-card';
 
-                const isMastery = a.alert_type === 'mastery';
-                const tagHtml = isMastery
-                    ? `<span class="badge bg-secondary me-1">${a.concept || ''}</span><small class="text-danger fw-bold">${(a.mastery_pct || 0).toFixed(0)}% de domínio</small>`
-                    : `<span class="badge bg-danger me-1">Nota baixa</span><small class="text-danger fw-bold">${a.score ?? '?'}% na atividade</small>`;
+                const tagHtml = `<span class="badge bg-danger me-1">Nota baixa</span><small class="text-danger fw-bold">${a.score ?? '?'}% na atividade</small>`;
 
                 const emailHtml = a.student_email
                     ? `<a href="mailto:${a.student_email}" class="ms-1" style="font-size:0.8rem;">${a.student_email}</a>`

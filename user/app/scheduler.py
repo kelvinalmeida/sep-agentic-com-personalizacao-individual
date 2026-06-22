@@ -58,35 +58,35 @@ def _get_domain_info(domain_ids):
 
 
 def _generate_tip(client, domain_name, domain_desc, pref_content_type):
-    """Generates a short pedagogical tip (≤ 100 words) via LLM."""
+    """Gera um mini-conteúdo educativo sobre o domínio da sessão via LLM."""
     topic = domain_name or 'conteúdo da sessão'
-
+    desc_line = f"\nDescrição do domínio: {domain_desc[:200]}" if domain_desc else ''
     pref_line = f"\nPreferência de conteúdo: {pref_content_type}." if pref_content_type else ''
 
-    prompt = f"""Você é um tutor educacional proativo acompanhando ESTUDANTE em uma sessão sobre "{topic}".
-{('Descrição: ' + domain_desc[:200]) if domain_desc else ''}{pref_line}
+    prompt = f"""Você é um tutor educacional gerando mini-conteúdo para uma sessão sobre "{topic}".{desc_line}{pref_line}
 
-Gere UMA dica pedagógica curta (máximo 100 palavras) e motivadora para ajudar o estudante com o conteúdo da sessão.
-Regras:
+Gere um MINI-CONTEÚDO EDUCATIVO (máximo 150 palavras) que ajude o estudante a entender melhor o que está sendo ensinado:
+- Explique um conceito central do tema "{topic}" com linguagem clara e acessível
+- Use um exemplo prático ou analogia do cotidiano para ilustrar o conceito
+- Termine com uma pergunta reflexiva para estimular o raciocínio
 - NUNCA revele respostas de exercícios ou gabaritos
 - Use sempre "você" (nunca o nome do aluno)
-- Dê uma dica geral e encorajadora sobre o tema
 - Sem markdown, sem JSON, apenas texto corrido"""
 
     try:
         resp = client.chat.completions.create(
             model="llama-3.3-70b-versatile",
             messages=[
-                {"role": "system", "content": "Você escreve dicas pedagógicas curtas e motivadoras. Nunca revela gabaritos."},
+                {"role": "system", "content": "Você escreve mini-conteúdos educativos claros e didáticos. Nunca revela gabaritos."},
                 {"role": "user", "content": prompt}
             ],
-            temperature=0.6,
-            max_tokens=150
+            temperature=0.5,
+            max_tokens=250
         )
         return (resp.choices[0].message.content or "").strip()
     except Exception as e:
-        logging.warning("[ProactiveScheduler] Falha ao gerar dica LLM: %s", e)
-        return f"Continue praticando! Cada exercício sobre {topic} fortalece seu aprendizado. Você consegue!"
+        logging.warning("[ProactiveScheduler] Falha ao gerar conteúdo LLM: %s", e)
+        return f"Vamos aprofundar o tema '{topic}'? Pense em como esse conteúdo se aplica no seu dia a dia e tente formular uma pergunta sobre o que ainda não ficou claro."
 
 
 def send_proactive_tips(app):

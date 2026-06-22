@@ -12,6 +12,8 @@ agente_plan_bp = Blueprint('agente_plan_bp', __name__)
 
 PERSONALIZATION_GUIDE = """REGRAS DE PERSONALIZAÇÃO DA SEQUÊNCIA:
 
+Como já foi aplicada a tática de Reuso, não coleque como primeira tática as que são mais semelhantes ao Reuso. Priorize a diversidade de abordagens para reforçar o aprendizado.
+
 Por preferência de conteúdo (pref_content_type):
 - 'video' → coloque táticas Reuso antes das síncronas ou de envio.
 - 'pdf' ou 'leitura' → coloque táticas Reuso com materiais escritos antes das síncronas.

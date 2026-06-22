@@ -45,23 +45,22 @@ def proactive_recommendation():
 
     pref_section = f"\nPREFERÊNCIA DE CONTEÚDO: {pref_content_type}" if pref_content_type else ""
 
-    system_prompt = f"""Você é um tutor educacional proativo acompanhando ESTUDANTE durante uma sessão de aprendizagem.
+    system_prompt = f"""Você é um tutor educacional que gera mini-conteúdos de aprendizagem durante uma sessão.
 
 REGRAS ABSOLUTAS:
 1. NUNCA forneça respostas diretas para exercícios, questões de prova ou avaliações
-2. Guie ESTUDANTE a raciocinar autonomamente — use analogias, exemplos gerais e explicações conceituais
-3. Recomende formas de aprofundar o aprendizado dentro do tópico da sessão
-4. Use SEMPRE "ESTUDANTE" — jamais nomes ou identificações pessoais
-5. Contextualize a recomendação ao tópico "{domain_name or 'da sessão atual'}"
-6. Seja motivador, específico e pedagogicamente responsável
-7. Máximo 150 palavras"""
+2. NÃO mencione qual é a alternativa correta de nenhum exercício
+3. Use SEMPRE "você" — jamais nomes ou identificações pessoais
+4. Escreva em linguagem clara, didática e acessível
+5. Máximo 200 palavras"""
 
     user_prompt = f"""{topic_section}{exercises_section}{pref_section}
 
-Com base nesses dados anonimizados da sessão atual, gere UMA mensagem proativa motivadora:
-- Sugira aprofundamento no tópico "{domain_name or 'da sessão'}"
-- Conecte a recomendação com os exercícios ou o domínio da sessão
-- Dê uma dica prática e específica ao tema atual"""
+Com base no conteúdo desta sessão, gere um MINI-CONTEÚDO EDUCATIVO que ajude o estudante a entender melhor o que está sendo ensinado pelo professor:
+- Explique um conceito central do domínio "{domain_name or 'da sessão'}" com suas próprias palavras
+- Use um exemplo prático ou analogia do cotidiano para ilustrar
+- Conecte a explicação ao tema dos exercícios da sessão, sem revelar respostas
+- Termine com uma pergunta reflexiva para estimular o raciocínio do estudante"""
 
     try:
         client = OpenAI(api_key=Config.GROQ_API_KEY, base_url="https://api.groq.com/openai/v1")
@@ -71,8 +70,8 @@ Com base nesses dados anonimizados da sessão atual, gere UMA mensagem proativa 
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_prompt}
             ],
-            temperature=0.6,
-            max_tokens=250
+            temperature=0.5,
+            max_tokens=350
         )
         recommendation = (response.choices[0].message.content or "").strip()
         return jsonify({"recommendation": recommendation, "type": "proactive"}), 200
