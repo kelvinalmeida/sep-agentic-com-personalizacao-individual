@@ -323,7 +323,7 @@ document.addEventListener("DOMContentLoaded", () => {
         }
     }
 
-    function startCountdown(remainingTime, strategyTactics, tacticName) {
+    function startCountdown(remainingTime, strategyTactics, tacticName, tacticDomainId) {
         clearInterval(countdownInterval);
         // Limpa qualquer estado de loading (spinner da IA) antes de montar a nova tática
         const tacticHereEl = document.getElementById("tatic_here");
@@ -347,7 +347,7 @@ document.addEventListener("DOMContentLoaded", () => {
         // Remove os elementos da tática anterior antes de montar a nova
         removerElemento();
 
-        countdownInterval = setInterval(() => {
+        const _tickFn = () => {
             // Evitar auto-avanço se for a tática de "Regra", pois ela tem lógica própria de execução
             const isRegra = (tacticName === "Regra" || tacticName === "Regras");
 
@@ -492,10 +492,9 @@ document.addEventListener("DOMContentLoaded", () => {
                         tatic_here.appendChild(tabContainer);
                         _startProactiveTimer();
 
-                        // ---------- Carregar PDFs ----------
-                        const pdfData = document.getElementById("pdf_data").getAttribute("data-pdfs");
-                        const pdfs = JSON.parse(pdfData);
+                        const _reusoDomainId = tacticDomainId || domain_id;
 
+                        // ---------- Carregar PDFs ----------
                         const pdfContainer = document.getElementById("pdf_container");
                         const _studyTextKey = `reuso_study_text_${session_id}_${my_id}`;
                         const _savedStudyText = localStorage.getItem(_studyTextKey);
@@ -522,16 +521,13 @@ document.addEventListener("DOMContentLoaded", () => {
                             pdfContainer.innerHTML = '';
                             pdfContainer.appendChild(_card);
                         } else {
-                            pdfs.forEach(pdf => {
-                                fetch(`/pdfs/${pdf.id}`, {
-                                    headers: {
-                                        "Authorization": `Bearer ${token}`
-                                    }
-                                })
+                            const _loadPdfs = (pdfs) => {
+                                pdfs.forEach(pdf => {
+                                    fetch(`/pdfs/${pdf.id}`, {
+                                        headers: { "Authorization": `Bearer ${token}` }
+                                    })
                                     .then(response => {
-                                        if (!response.ok) {
-                                            throw new Error("Erro ao baixar PDF");
-                                        }
+                                        if (!response.ok) throw new Error("Erro ao baixar PDF");
                                         return response.blob();
                                     })
                                     .then(blob => {
@@ -542,17 +538,34 @@ document.addEventListener("DOMContentLoaded", () => {
                                         embed.width = "100%";
                                         embed.height = "600px";
                                         embed.className = "mb-3";
-
                                         pdfContainer.appendChild(embed);
                                     })
-                                    .catch(error => {
-                                        console.error("Erro ao carregar PDF: ", error);
-                                    });
-                            });
+                                    .catch(error => console.error("Erro ao carregar PDF: ", error));
+                                });
+                            };
+
+                            if (tacticDomainId) {
+                                fetch(`/domains/${_reusoDomainId}/pdfs`, {
+                                    headers: { "Authorization": `Bearer ${token}` }
+                                })
+                                .then(r => r.json())
+                                .then(pdfs => _loadPdfs(pdfs))
+                                .catch(() => {});
+                            } else {
+                                const pdfDataEl = document.getElementById("pdf_data");
+                                if (pdfDataEl) {
+                                    _loadPdfs(JSON.parse(pdfDataEl.getAttribute("data-pdfs")));
+                                }
+                            }
                         }
 
                         // ----------Carregar Exercícios----------
-                        fetch(`/domains/${domain_id}/exercises`, {
+                        if (!_reusoDomainId) {
+                            reusoExercisesState = false;
+                            const container = document.getElementById("exercise_container");
+                            if (container) container.innerHTML = "<p class='text-muted'>Nenhum domínio configurado para esta tática.</p>";
+                        } else {
+                        fetch(`/domains/${_reusoDomainId}/exercises`, {
                             headers: {
                                 "Authorization": `Bearer ${token}`
                             }
@@ -562,8 +575,8 @@ document.addEventListener("DOMContentLoaded", () => {
                                 reusoExercisesState = data.length > 0;
                                 const container = document.getElementById("exercise_container");
 
-                                if (data.length === 0) {
-                                    container.innerHTML = "<p class='text-muted'>Nenhum exercício encontrado.</p>";
+                                if (!Array.isArray(data) || data.length === 0) {
+                                    container.innerHTML = "<p class='text-muted'>Nenhum exercício encontrado neste domínio.</p>";
                                     return;
                                 }
 
@@ -921,10 +934,11 @@ document.addEventListener("DOMContentLoaded", () => {
                                 console.error("Erro ao carregar exercícios:", err);
                                 reusoExercisesState = false;
                             });
+                        } // end exercises fetch block
 
 
                         // ---------- Carregar Vídeos ----------
-                        fetch(`/domains/${domain_id}/videos`, {
+                        fetch(`/domains/${_reusoDomainId}/videos`, {
                             headers: {
                                 "Authorization": `Bearer ${token}`
                             }
@@ -1095,7 +1109,9 @@ document.addEventListener("DOMContentLoaded", () => {
                 }
             }
 
-        }, 1000);
+        };
+        if (timeLeft > 0) _tickFn(); // Build tactic UI immediately — no 1-second delay on first render
+        countdownInterval = setInterval(_tickFn, 1000);
     }
 
     function convertToEmbedUrl(url) {
@@ -1291,7 +1307,7 @@ document.addEventListener("DOMContentLoaded", () => {
                                     .catch(() => fetchCurrentTactic(session_id));
                             }
                         } else {
-                            startCountdown(data.remaining_time, data.strategy_tactics, data.tactic.name);
+                            startCountdown(data.remaining_time, data.strategy_tactics, data.tactic.name, data.tactic.domain_id);
                         }
                     }
                 } else if (data.session_status === 'student_finished') {

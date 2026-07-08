@@ -74,15 +74,25 @@ def list_sessions(current_user=None):
         teacher_map = {str(item["id"]): item["username"] for item in teacher_data}
         student_map = {str(item["id"]): item["username"] for item in student_data}
         domains_map = {str(item["id"]): item["name"] for item in domains_data}
-        
-        # return f"{domains_map}"
-        # return f"{domains_map.get(sessions[0].get('domains', [])[0])}"
 
+        # Mapa: strategy_id → nomes de domínios das táticas Reuso
+        strategy_reuso_domains = {}
+        for strat in strategy_data:
+            reuso_names = []
+            for tactic in strat.get("tatics", []):
+                if tactic.get("name") == "Reuso" and tactic.get("domain_id"):
+                    name = domains_map.get(str(tactic["domain_id"]))
+                    if name and name not in reuso_names:
+                        reuso_names.append(name)
+            if reuso_names:
+                strategy_reuso_domains[str(strat["id"])] = reuso_names
 
         for session in sessions:
+            session_strategy_ids = session.get("strategies", [])
+
             session["strategies"] = [
                 strategy_map.get(str(sid), f"ID {sid}")
-                for sid in session.get("strategies", [])
+                for sid in session_strategy_ids
             ]
             session["teachers"] = [
                 teacher_map.get(str(tid), f"ID {tid}")
@@ -92,10 +102,20 @@ def list_sessions(current_user=None):
                 student_map.get(str(sid), f"ID {sid}")
                 for sid in session.get("students", [])
             ]
-            session["domains"] = [
-                domains_map.get(str(sid), f"ID {sid}")
-                for sid in session.get("domains", [])
-            ]
+
+            domain_ids = session.get("domains", [])
+            if domain_ids:
+                session["domains"] = [
+                    domains_map.get(str(sid), f"ID {sid}") for sid in domain_ids
+                ]
+                session["domains_from_tactic"] = False
+            else:
+                # Fallback: domínios das táticas Reuso da estratégia
+                tactic_domains = []
+                for sid in session_strategy_ids:
+                    tactic_domains.extend(strategy_reuso_domains.get(str(sid), []))
+                session["domains"] = tactic_domains
+                session["domains_from_tactic"] = bool(tactic_domains)
 
         # return f"{sessions}"
         
@@ -584,6 +604,7 @@ def get_current_tactic(session_id):
         'tactic': {
             'name': current_tactic['name'],
             'description': current_tactic.get('description', ''),
+            'domain_id': current_tactic.get('domain_id'),
             'total_time': current_tactic.get('time', 0) * 60
         },
         'remaining_time': int(remaining),

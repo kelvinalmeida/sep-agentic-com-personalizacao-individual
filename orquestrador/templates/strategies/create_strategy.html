@@ -247,14 +247,18 @@
 
 
         let availableStrategies = [];
+        let availableDomains = [];
 
-        // Fetch strategies on load
+        // Fetch strategies and domains on load
         fetch('/strategies/strategies_json')
             .then(r => r.json())
-            .then(data => {
-                availableStrategies = data;
-            })
+            .then(data => { availableStrategies = data; })
             .catch(err => console.error("Error loading strategies:", err));
+
+        fetch('/domains/domains_json')
+            .then(r => r.json())
+            .then(data => { availableDomains = data; })
+            .catch(err => console.error("Error loading domains:", err));
 
 
         const draggables = document.querySelectorAll('.draggable');
@@ -275,11 +279,7 @@
 
             const tacticName = e.dataTransfer.getData('text/plain');
 
-            // Verifica se já existe a tática no dropzone
-            const existingTactics = Array.from(dropzone.querySelectorAll('.tactic-label'))
-                .map(el => el.textContent.trim());
-
-            if (tacticName && tacticName !== '' && !existingTactics.includes(tacticName)) {
+            if (tacticName && tacticName !== '') {
                 addTacticToDropzone(tacticName);
             }
 
@@ -320,7 +320,14 @@
             wrapper.appendChild(tacticText);
             wrapper.appendChild(inputTime);
 
-            // Special handling for "Mudanca de Estrategia"
+            // domain_id hidden (populated below for Reuso, empty for others)
+            const inputDomainId = document.createElement('input');
+            inputDomainId.type = 'hidden';
+            inputDomainId.name = 'domain_ids';
+            inputDomainId.value = '';
+            wrapper.appendChild(inputDomainId);
+
+            // Special handling per tactic
             if (tacticName === "Mudanca de Estrategia") {
                 const selectStrategy = document.createElement('select');
                 selectStrategy.name = 'description';
@@ -341,6 +348,37 @@
                     selectStrategy.appendChild(opt);
                 });
                 wrapper.appendChild(selectStrategy);
+
+            } else if (tacticName === "Reuso") {
+                const selectDomain = document.createElement('select');
+                selectDomain.className = 'form-select w-50';
+                selectDomain.required = true;
+
+                const defaultOpt = document.createElement('option');
+                defaultOpt.value = "";
+                defaultOpt.text = "Selecione o domínio";
+                defaultOpt.disabled = true;
+                defaultOpt.selected = true;
+                selectDomain.appendChild(defaultOpt);
+
+                availableDomains.forEach(d => {
+                    const opt = document.createElement('option');
+                    opt.value = d.id;
+                    opt.text = d.name;
+                    selectDomain.appendChild(opt);
+                });
+
+                selectDomain.addEventListener('change', () => {
+                    inputDomainId.value = selectDomain.value;
+                });
+
+                // description vazio para Reuso
+                const inputDesc = document.createElement('input');
+                inputDesc.type = 'hidden';
+                inputDesc.name = 'description';
+                inputDesc.value = '';
+                wrapper.appendChild(inputDesc);
+                wrapper.appendChild(selectDomain);
 
             } else {
                 const inputDescription = document.createElement('input');

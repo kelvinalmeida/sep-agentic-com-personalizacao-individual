@@ -8,6 +8,7 @@ from openai import OpenAI
 
 CONTROL_URL = 'http://agente_sessao:5001'
 DOMAIN_URL = 'http://domain:5004'
+STRATEGIES_URL = 'http://strategies:5003'
 
 PROACTIVE_COOLDOWN_MINUTES = 5
 
@@ -29,6 +30,30 @@ def _ensure_tables(conn):
             ADD COLUMN IF NOT EXISTS session_id INTEGER
         """)
     conn.commit()
+
+
+def _get_tactic_domain_id(session_id, student_id, session):
+    """Retorna o domain_id da tática ativa do aluno (fallback quando sessão não tem domínio)."""
+    try:
+        strategy_ids = session.get('strategies', [])
+        if not strategy_ids:
+            return None
+
+        prog = requests.get(
+            f"{CONTROL_URL}/sessions/{session_id}/student/{student_id}/tactic_index",
+            timeout=6
+        )
+        tactic_index = prog.json().get('current_tactic_index', 0) if prog.status_code == 200 else 0
+
+        strat = requests.get(f"{STRATEGIES_URL}/strategies/{strategy_ids[0]}", timeout=6)
+        if strat.status_code != 200:
+            return None
+        tactics = strat.json().get('tatics', [])
+        if tactic_index < len(tactics):
+            return tactics[tactic_index].get('domain_id')
+    except Exception:
+        pass
+    return None
 
 
 def _get_domain_info(domain_ids):
@@ -132,7 +157,7 @@ def send_proactive_tips(app):
                 student_ids = session.get('students', [])
                 domain_ids = session.get('domains', [])
 
-                domain_name, domain_desc = _get_domain_info(domain_ids)
+                session_domain_name, session_domain_desc = _get_domain_info(domain_ids)
 
                 for student_id in student_ids:
                     try:
@@ -164,6 +189,14 @@ def send_proactive_tips(app):
                             last_time = last_row['created_at']
                             if datetime.utcnow() - last_time < timedelta(minutes=PROACTIVE_COOLDOWN_MINUTES):
                                 continue
+
+                        # Usa domínio da sessão; se vazio, busca da tática ativa do aluno
+                        domain_name = session_domain_name
+                        domain_desc = session_domain_desc
+                        if not domain_name:
+                            tactic_domain_id = _get_tactic_domain_id(session_id, student_id, session)
+                            if tactic_domain_id:
+                                domain_name, domain_desc = _get_domain_info([tactic_domain_id])
 
                         tip = _generate_tip(client, domain_name, domain_desc, pref)
 

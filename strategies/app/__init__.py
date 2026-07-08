@@ -47,6 +47,12 @@ def create_app():
         except Exception as e:
             import logging
             logging.warning("db.create_all() falhou — DB pode não estar pronto ainda: %s", e)
+        try:
+            from sqlalchemy import text
+            db.session.execute(text("ALTER TABLE tactics ADD COLUMN IF NOT EXISTS domain_id INTEGER"))
+            db.session.commit()
+        except Exception:
+            db.session.rollback()
 
     # Inicia scheduler apenas uma vez (evita duplicação no reload do Werkzeug)
     if not app.debug or os.environ.get('WERKZEUG_RUN_MAIN') == 'true':

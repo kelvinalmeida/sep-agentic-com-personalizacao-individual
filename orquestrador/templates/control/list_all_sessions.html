@@ -59,8 +59,11 @@
                             {{ domain }}
                         </span>
                         {% endfor %}
+                        {% if session.domains_from_tactic %}
+                        <small class="text-muted d-block mt-1">via tática Reuso</small>
+                        {% endif %}
                         {% else %}
-                        <em>No domain</em>
+                        <em class="text-muted">Nenhum domínio</em>
                         {% endif %}
 
                         <p class="mt-3"><strong>Teachers:</strong></p>

@@ -3,10 +3,34 @@ import logging
 from concurrent.futures import ThreadPoolExecutor
 from flask import Blueprint, request, jsonify
 from routes.auth import token_required
-from routes.services_routs import USER_URL, CONTROL_URL, DOMAIN_URL
+from routes.services_routs import USER_URL, CONTROL_URL, DOMAIN_URL, STRATEGIES_URL
 
 agente_proactive_orch_bp = Blueprint('agente_proactive_orch_bp', __name__)
 logging.basicConfig(level=logging.INFO)
+
+
+def _get_tactic_domain_id(session_id, student_id, session_data):
+    """Retorna o domain_id da tática ativa do aluno quando a sessão não tem domínio."""
+    try:
+        strategy_ids = session_data.get('strategies', [])
+        if not strategy_ids:
+            return None
+
+        prog = requests.get(
+            f"{CONTROL_URL}/sessions/{session_id}/student/{student_id}/tactic_index",
+            timeout=6
+        )
+        tactic_index = prog.json().get('current_tactic_index', 0) if prog.status_code == 200 else 0
+
+        strat = requests.get(f"{STRATEGIES_URL}/strategies/{strategy_ids[0]}", timeout=6)
+        if strat.status_code != 200:
+            return None
+        tactics = strat.json().get('tatics', [])
+        if tactic_index < len(tactics):
+            return tactics[tactic_index].get('domain_id')
+    except Exception:
+        pass
+    return None
 
 
 def _get_session_context(session_id, student_id):
@@ -17,16 +41,20 @@ def _get_session_context(session_id, student_id):
     """
     def fetch_domain_context():
         try:
-            # Busca dados da sessão para obter domain IDs
             r = requests.get(f"{CONTROL_URL}/sessions/{session_id}", timeout=6)
             if not r.ok:
                 return {}, []
             session_data = r.json() or {}
             domain_ids = session_data.get('domains', [])
-            if not domain_ids:
-                return {}, []
 
-            domain_id = int(domain_ids[0])
+            domain_id = int(domain_ids[0]) if domain_ids else None
+
+            # Se a sessão não tem domínio, busca o domínio da tática ativa do aluno
+            if not domain_id:
+                domain_id = _get_tactic_domain_id(session_id, student_id, session_data)
+
+            if not domain_id:
+                return {}, []
 
             # Busca nome e descrição do domínio
             r_domain = requests.get(f"{DOMAIN_URL}/domains/{domain_id}", timeout=6)
