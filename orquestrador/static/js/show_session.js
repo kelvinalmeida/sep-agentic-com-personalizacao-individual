@@ -584,29 +584,97 @@ document.addEventListener("DOMContentLoaded", () => {
                                 const form = document.createElement("form");
                                 form.id = "exerciseForm";
 
-                                console.log("Exercícios carregados:", data);
+                                // Cabeçalho com contador de progresso
+                                const progressBar = document.createElement("div");
+                                progressBar.className = "d-flex justify-content-between align-items-center mb-4 p-3 rounded-3";
+                                progressBar.style.cssText = "background:linear-gradient(135deg,#667eea18,#764ba218);border:1px solid #667eea30;";
+                                progressBar.innerHTML = `
+                                    <div class="d-flex align-items-center gap-2">
+                                        <span style="font-size:1.3rem;">📝</span>
+                                        <span class="fw-semibold text-secondary">${data.length} ${data.length === 1 ? 'questão' : 'questões'}</span>
+                                    </div>
+                                    <span id="progress-count" class="badge rounded-pill fs-6 px-3 py-2" style="background:#667eea;">0 / ${data.length}</span>
+                                `;
+                                form.appendChild(progressBar);
 
-                                // Para cada exercício, cria um bloco com as perguntas
+                                // Letras das alternativas
+                                const _letters = 'ABCDE';
+
+                                // Para cada exercício, cria um card estilizado
                                 data.forEach((ex, index) => {
-                                    const div = document.createElement("div");
-                                    div.className = "mb-3 border rounded p-2 bg-light";
-                                    div.innerHTML = `
-                <p><strong>${index + 1}) ${ex.question}</strong></p>
-                ${ex.options.map((opt, i) => `
-                    <div>
-                        <input type="radio" name="exercise_${ex.id}" value="${i}" required>
-                        ${i + 1}) ${opt}
-                    </div>
-                `).join("")}
-            `;
-                                    form.appendChild(div);
+                                    const card = document.createElement("div");
+                                    card.className = "mb-4";
+                                    card.innerHTML = `
+                                        <div class="card border-0 shadow-sm overflow-hidden">
+                                            <div class="card-header d-flex align-items-start gap-3 py-3 border-0"
+                                                 style="background:linear-gradient(135deg,#667eea18,#764ba218); border-left:4px solid #667eea !important;">
+                                                <span class="badge rounded-circle fw-bold flex-shrink-0 d-flex align-items-center justify-content-center"
+                                                      style="width:34px;height:34px;font-size:0.95rem;background:#667eea;margin-top:1px;">
+                                                    ${index + 1}
+                                                </span>
+                                                <span class="fw-semibold lh-sm pt-1">${ex.question}</span>
+                                            </div>
+                                            <div class="card-body pt-3 pb-2 px-3">
+                                                ${ex.options.map((opt, i) => `
+                                                    <label class="d-flex align-items-center gap-3 p-3 mb-2 rounded-3 border _opt-lbl"
+                                                           style="cursor:pointer;transition:background .15s,border-color .15s;border-color:#dee2e6!important;">
+                                                        <input type="radio" name="exercise_${ex.id}" value="${i}" required class="d-none">
+                                                        <span class="_opt-letter fw-bold flex-shrink-0 rounded-circle d-flex align-items-center justify-content-center"
+                                                              style="width:32px;height:32px;background:#f0f0f0;color:#555;font-size:.85rem;transition:background .15s,color .15s;">
+                                                            ${_letters[i] || i + 1}
+                                                        </span>
+                                                        <span class="flex-grow-1">${opt}</span>
+                                                    </label>
+                                                `).join("")}
+                                            </div>
+                                        </div>
+                                    `;
+                                    form.appendChild(card);
+                                });
+
+                                // Listener de mudança: destaca opção selecionada + atualiza progresso
+                                form.addEventListener("change", e => {
+                                    if (e.target.type !== "radio") return;
+                                    // Remove destaque das opções do mesmo grupo
+                                    form.querySelectorAll(`input[name="${e.target.name}"]`).forEach(r => {
+                                        const lbl = r.closest("._opt-lbl");
+                                        if (lbl) {
+                                            lbl.style.background = "";
+                                            lbl.style.borderColor = "#dee2e6";
+                                            const letter = lbl.querySelector("._opt-letter");
+                                            if (letter) { letter.style.background = "#f0f0f0"; letter.style.color = "#555"; }
+                                        }
+                                    });
+                                    // Destaca a selecionada
+                                    const selLbl = e.target.closest("._opt-lbl");
+                                    if (selLbl) {
+                                        selLbl.style.background = "rgba(102,126,234,.1)";
+                                        selLbl.style.borderColor = "#667eea";
+                                        const selLetter = selLbl.querySelector("._opt-letter");
+                                        if (selLetter) { selLetter.style.background = "#667eea"; selLetter.style.color = "white"; }
+                                    }
+                                    // Atualiza contador de progresso
+                                    const answered = new Set();
+                                    form.querySelectorAll("input[type='radio']:checked").forEach(r => answered.add(r.name));
+                                    const countEl = document.getElementById("progress-count");
+                                    if (countEl) {
+                                        countEl.textContent = `${answered.size} / ${data.length}`;
+                                        countEl.style.background = answered.size === data.length ? "#198754" : "#667eea";
+                                    }
                                 });
 
                                 // Botão de envio e feedback
-                                form.innerHTML += `
-            <button type="submit" class="btn btn-primary mt-3">Enviar respostas</button>
-            <div id="formFeedback" class="mt-2 text-danger"></div>
-        `;
+                                const submitArea = document.createElement("div");
+                                submitArea.innerHTML = `
+                                    <div class="d-grid mt-2">
+                                        <button type="submit" class="btn btn-lg fw-bold py-3"
+                                                style="background:linear-gradient(135deg,#667eea,#764ba2);color:white;border:none;">
+                                            📤 Enviar Respostas
+                                        </button>
+                                    </div>
+                                    <div id="formFeedback" class="mt-3 text-center fw-bold"></div>
+                                `;
+                                form.appendChild(submitArea);
 
                                 container.innerHTML = ""; // Limpa qualquer conteúdo anterior
                                 container.appendChild(form); // Insere o formulário

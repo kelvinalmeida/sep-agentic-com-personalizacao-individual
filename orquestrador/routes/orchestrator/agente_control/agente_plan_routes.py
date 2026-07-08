@@ -12,8 +12,6 @@ agente_plan_bp = Blueprint('agente_plan_bp', __name__)
 
 PERSONALIZATION_GUIDE = """REGRAS DE PERSONALIZAÇÃO DA SEQUÊNCIA:
 
-Como já foi aplicada a tática de Reuso, não coleque como primeira tática as que são mais semelhantes ao Reuso. Priorize a diversidade de abordagens para reforçar o aprendizado. Também não coloque em sequencia táticas que sejam muito semelhantes entre si, para evitar repetição de atividades.
-
 Por preferência de conteúdo (pref_content_type):
 - 'video' → coloque táticas Reuso antes das síncronas ou de envio.
 - 'pdf' ou 'leitura' → coloque táticas Reuso com materiais escritos antes das síncronas.
@@ -27,7 +25,12 @@ Por pref_receive_email:
 - true → coloque Envio de Informação antes das atividades práticas.
 - false → mova Envio de Informação para o final.
 
-A ordem deve ser personalizada: dois alunos com preferências diferentes devem ter sequências diferentes."""
+A ordem deve ser personalizada: dois alunos com preferências diferentes devem ter sequências diferentes.
+
+IMPORTANTE: já foi aplicada a tática de Reuso, então NÂO coleque como primeira tática a tatica de reuso novamente. 
+
+Priorize a diversidade de abordagens para reforçar o aprendizado. Também não coloque em sequencia táticas que sejam muito semelhantes entre si, para evitar repetição de atividades.
+"""
 
 
 def _build_groq_client():
