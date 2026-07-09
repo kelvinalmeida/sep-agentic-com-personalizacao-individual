@@ -486,15 +486,23 @@
                                     <td>{{ tatic.time }}</td>
                                     <td>
                                         {{ tatic.description or '—' }}
-                                        {% if tatic.name and 'reuso' in tatic.name|lower and session.domains and session.domains[0].pdfs %}
+                                        {% if tatic.name and 'reuso' in tatic.name|lower %}
+                                        {% set reuso_pdfs = [] %}
+                                        {% if tatic.domain_id and tactic_domains_map[tatic.domain_id|string] is defined %}
+                                            {% set reuso_pdfs = tactic_domains_map[tatic.domain_id|string].pdfs or [] %}
+                                        {% elif session.domains and session.domains[0].pdfs %}
+                                            {% set reuso_pdfs = session.domains[0].pdfs %}
+                                        {% endif %}
+                                        {% if reuso_pdfs %}
                                         <div class="mt-2 d-flex flex-wrap gap-2">
-                                            {% for pdf in session.domains[0].pdfs %}
+                                            {% for pdf in reuso_pdfs %}
                                             <a href="{{ url_for('domain.proxy_pdf_download', pdf_id=pdf.id) }}"
                                                 class="btn btn-outline-primary btn-sm" target="_blank" rel="noopener noreferrer">
                                                 <i class="bi bi-download me-1"></i>{{ pdf.filename }}
                                             </a>
                                             {% endfor %}
                                         </div>
+                                        {% endif %}
                                         {% endif %}
                                     </td>
                                 </tr>

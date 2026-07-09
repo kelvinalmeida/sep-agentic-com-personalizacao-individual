@@ -166,9 +166,26 @@ def get_session_by_id(session_id, current_user=None):
         domains = requests.get(f"{DOMAIN_URL}/domains/ids_to_names", params=domains_params).json()
         session["domains"] = domains
 
+        # Coleta domain_ids das táticas Reuso para disponibilizar PDFs no template
+        tactic_domain_ids = []
+        for strat in session.get("strategies", []):
+            for tatic in strat.get("tatics", []) if isinstance(strat, dict) else []:
+                did = tatic.get("domain_id")
+                if did and did not in tactic_domain_ids:
+                    tactic_domain_ids.append(did)
+
+        tactic_domains_map = {}
+        if tactic_domain_ids:
+            td_params = {'ids': tactic_domain_ids}
+            td_resp = requests.get(f"{DOMAIN_URL}/domains/ids_to_names", params=td_params)
+            if td_resp.ok:
+                for d in td_resp.json():
+                    tactic_domains_map[str(d["id"])] = d
 
         # return f"{session}"
-        return render_template("control/show_session.html", session=session, current_user=current_user, studantes_with_id_and_username=studantes_with_id_and_username)
+        return render_template("control/show_session.html", session=session, current_user=current_user,
+                               studantes_with_id_and_username=studantes_with_id_and_username,
+                               tactic_domains_map=tactic_domains_map)
 
     except RequestException as e:
         return jsonify({"error": "Service unavailable", "details": str(e)}), 503
