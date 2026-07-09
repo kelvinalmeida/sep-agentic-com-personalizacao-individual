@@ -156,7 +156,9 @@ def get_student_by_id(student_id):
     cursor = conn.cursor()
 
     try:
-        get_student_query = "SELECT student_id id, name, age, course, type, username, password_hash password FROM student WHERE student_id = %s;"
+        get_student_query = """SELECT student_id id, name, age, course, type, username,
+                                     email, pref_content_type, pref_communication, pref_receive_email
+                              FROM student WHERE student_id = %s;"""
         cursor.execute(get_student_query, (student_id,))
         row = cursor.fetchone()
 
@@ -188,12 +190,20 @@ def update_student(student_id):
         name = request.json.get("name")
         age = request.json.get("age")
         course = request.json.get("course")
+        email = request.json.get("email")
+        pref_content_type = request.json.get("pref_content_type")
+        pref_communication = request.json.get("pref_communication")
+        pref_receive_email = request.json.get("pref_receive_email")
 
-        update_student_query = """UPDATE student 
-                                  SET name = %s, age = %s, course = %s 
+        update_student_query = """UPDATE student
+                                  SET name = %s, age = %s, course = %s,
+                                      email = %s, pref_content_type = %s,
+                                      pref_communication = %s, pref_receive_email = %s
                                   WHERE student_id = %s;"""
-        
-        cursor.execute(update_student_query, (name, age, course, student_id))
+
+        cursor.execute(update_student_query, (name, age, course, email,
+                                              pref_content_type, pref_communication,
+                                              pref_receive_email, student_id))
         conn.commit()
 
         cursor.close()
