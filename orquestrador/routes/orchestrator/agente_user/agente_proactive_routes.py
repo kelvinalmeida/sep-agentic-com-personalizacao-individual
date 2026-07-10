@@ -9,8 +9,12 @@ agente_proactive_orch_bp = Blueprint('agente_proactive_orch_bp', __name__)
 logging.basicConfig(level=logging.INFO)
 
 
-def _get_tactic_domain_id(session_id, student_id, session_data):
-    """Retorna o domain_id da tática ativa do aluno quando a sessão não tem domínio."""
+def _get_active_reuso_domain_id(session_id, student_id, session_data):
+    """
+    Retorna o domain_id da tática Reuso ativa ou mais recentemente executada.
+    Varre as táticas do índice atual para trás buscando a mais próxima com
+    domain_id preenchido (que indica uma tática Reuso com material associado).
+    """
     try:
         strategy_ids = session_data.get('strategies', [])
         if not strategy_ids:
@@ -20,14 +24,24 @@ def _get_tactic_domain_id(session_id, student_id, session_data):
             f"{CONTROL_URL}/sessions/{session_id}/student/{student_id}/tactic_index",
             timeout=6
         )
-        tactic_index = prog.json().get('current_tactic_index', 0) if prog.status_code == 200 else 0
+        if prog.status_code != 200:
+            return None
+        current_index = prog.json().get('current_tactic_index', 0)
 
         strat = requests.get(f"{STRATEGIES_URL}/strategies/{strategy_ids[0]}", timeout=6)
         if strat.status_code != 200:
             return None
         tactics = strat.json().get('tatics', [])
-        if tactic_index < len(tactics):
-            return tactics[tactic_index].get('domain_id')
+        if not tactics:
+            return None
+
+        # Varre do índice atual para trás buscando a primeira tática com domain_id
+        # (táticas Reuso têm domain_id; Debate Sincrono, Envio de Informação, etc. não têm)
+        search_start = min(current_index, len(tactics) - 1)
+        for i in range(search_start, -1, -1):
+            did = tactics[i].get('domain_id')
+            if did:
+                return did
     except Exception:
         pass
     return None
@@ -45,13 +59,15 @@ def _get_session_context(session_id, student_id):
             if not r.ok:
                 return {}, []
             session_data = r.json() or {}
-            domain_ids = session_data.get('domains', [])
 
-            domain_id = int(domain_ids[0]) if domain_ids else None
+            # Prioridade 1: domain_id da tática Reuso atual ou mais recente
+            # (garante que a dica seja sobre o material em exibição agora)
+            domain_id = _get_active_reuso_domain_id(session_id, student_id, session_data)
 
-            # Se a sessão não tem domínio, busca o domínio da tática ativa do aluno
+            # Prioridade 2: primeiro domínio de sessão como fallback
             if not domain_id:
-                domain_id = _get_tactic_domain_id(session_id, student_id, session_data)
+                domain_ids = session_data.get('domains', [])
+                domain_id = int(domain_ids[0]) if domain_ids else None
 
             if not domain_id:
                 return {}, []

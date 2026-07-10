@@ -153,9 +153,17 @@
 
 <!-- Navbar fixa -->
 <nav class="top-nav">
-    <span class="fw-bold" style="font-size:1.05rem;color:#374151;">
-        <i class="bi bi-grid-3x3-gap-fill me-2" style="color:#667eea;"></i>Minhas Sessões
-    </span>
+    <div class="d-flex align-items-center gap-3">
+        <span class="fw-bold" style="font-size:1.05rem;color:#374151;">
+            <i class="bi bi-grid-3x3-gap-fill me-2" style="color:#667eea;"></i>Minhas Sessões
+        </span>
+        {% if current_user and current_user.type == 'teacher' %}
+        <a href="/" class="btn btn-sm rounded-pill px-3"
+           style="background:#f3f4f6;color:#374151;font-weight:600;border:none;font-size:0.82rem;">
+            <i class="bi bi-house me-1"></i>Painel
+        </a>
+        {% endif %}
+    </div>
     {% if current_user %}
     <div class="d-flex align-items-center gap-2">
         <div class="hero-avatar" style="width:36px;height:36px;font-size:1rem;">

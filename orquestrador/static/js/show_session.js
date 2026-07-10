@@ -21,18 +21,18 @@ document.addEventListener("DOMContentLoaded", () => {
     const my_id = window.my_id;
 
 
-    // Verificar se o susuatio tem notas extras, se não tiver, exibir mensagem
+    // Verificar se o usuário tem notas extras, se não tiver, exibir mensagem
     let student_extra_note = document.getElementById("student-extra-note-card-created");
     if (!student_extra_note) {
-        document.getElementById("student-extra-note-card").innerHTML = '<em>Sem notas extras atribuidas.</em>';
+        const noteCard = document.getElementById("student-extra-note-card");
+        if (noteCard) noteCard.innerHTML = '<em>Sem notas extras atribuidas.</em>';
     }
 
-    // Verificar se o usuário é estudante e se não tem respostas de exercícios, exibir mensagem
+    // Verificar se o usuário tem respostas de exercícios, se não tiver, exibir mensagem
     let student_answers_card = document.getElementById("student-answers-card-created");
-    console.log("student_answers_card_created: ", student_answers_card);
     if (!student_answers_card) {
-        console.log("student_answers_card>>: ", document.getElementById("student-answers-card"));
-        document.getElementById("student-answers-card").innerHTML = '<em>Sem respostas de exercícios enviadas nesta sessão.</em>';
+        const answersCard = document.getElementById("student-answers-card");
+        if (answersCard) answersCard.innerHTML = '<em>Sem respostas de exercícios enviadas nesta sessão.</em>';
     }
 
     // Variável para armazenar a instância atual da UI do Chat
@@ -1435,15 +1435,30 @@ document.addEventListener("DOMContentLoaded", () => {
     if (endSessionBtn) {
         endSessionBtn.addEventListener("click", () => {
             if (confirm("Tem certeza que deseja encerrar a sessão?")) {
+                endSessionBtn.disabled = true;
+                endSessionBtn.innerHTML = '<span class="spinner-border spinner-border-sm me-2"></span>Encerrando...';
                 fetch(`/sessions/end/${session_id}`)
                     .then(response => {
                         if (response.ok) {
-                            location.reload();
+                            endSessionBtn.innerHTML = '<i class="bi bi-stop-circle me-2"></i>Sessão Encerrada';
+                            const startBtn = document.getElementById("startSessionBtn");
+                            if (startBtn) startBtn.classList.remove("d-none");
+                            const statusPill = document.querySelector('.status-in-progress');
+                            if (statusPill) {
+                                statusPill.className = 'status-pill status-finished';
+                                statusPill.innerHTML = '<i class="bi bi-check-circle-fill" style="font-size:0.7rem;"></i> Encerrada';
+                            }
                         } else {
+                            endSessionBtn.disabled = false;
+                            endSessionBtn.innerHTML = '<i class="bi bi-stop-circle me-2"></i>Encerrar Sessão';
                             alert("Erro ao encerrar a sessão.");
                         }
                     })
-                    .catch(() => alert("Erro ao tentar encerrar a sessão."));
+                    .catch(() => {
+                        endSessionBtn.disabled = false;
+                        endSessionBtn.innerHTML = '<i class="bi bi-stop-circle me-2"></i>Encerrar Sessão';
+                        alert("Erro ao tentar encerrar a sessão.");
+                    });
             }
         });
     }
@@ -1500,17 +1515,24 @@ document.addEventListener("DOMContentLoaded", () => {
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ enabled: enabled })
             })
-            .then(r => r.json())
-            .then(() => {
-                adaptiveTacticEnabled = enabled;
-                const statusEl = document.getElementById("adaptive-tactic-status");
-                if (statusEl) {
-                    statusEl.textContent = enabled
-                        ? "Ativado: a IA escolhe a próxima tática para cada aluno."
-                        : "Desativado: alunos seguem a ordem normal das táticas.";
+            .then(r => {
+                if (r.ok) {
+                    adaptiveTacticEnabled = enabled;
+                    const statusEl = document.getElementById("adaptive-tactic-status");
+                    if (statusEl) {
+                        statusEl.textContent = enabled
+                            ? "Ativado: a IA escolhe a próxima tática para cada aluno."
+                            : "Desativado: alunos seguem a ordem normal das táticas.";
+                    }
+                } else {
+                    console.error("Erro ao atualizar tática adaptativa:", r.status);
+                    adaptiveTacticSwitch.checked = !enabled;
                 }
             })
-            .catch(err => console.error("Erro ao atualizar tática adaptativa:", err));
+            .catch(err => {
+                console.error("Erro ao atualizar tática adaptativa:", err);
+                adaptiveTacticSwitch.checked = !enabled;
+            });
         });
     }
 });
